@@ -1,3 +1,6 @@
+data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
+
 resource "aws_iam_role" "bedrock_agent_role" {
   name = "${var.agent_name}-${var.environment}-role"
 
@@ -7,6 +10,15 @@ resource "aws_iam_role" "bedrock_agent_role" {
       Action    = "sts:AssumeRole"
       Effect    = "Allow"
       Principal = { Service = "bedrock.amazonaws.com" }
+      # Prevent confused-deputy attack — restrict to this account only
+      Condition = {
+        StringEquals = {
+          "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+        }
+        ArnLike = {
+          "aws:SourceArn" = "arn:aws:bedrock:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:agent/*"
+        }
+      }
     }]
   })
 
@@ -25,18 +37,22 @@ resource "aws_iam_role_policy" "bedrock_agent_policy" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect   = "Allow"
-        Action   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
-        Resource = "*"
+        Sid    = "BedrockInvokeModel"
+        Effect = "Allow"
+        Action = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
+        # Scoped to the specific model — NOT wildcard Resource = "*"
+        Resource = "arn:aws:bedrock:${data.aws_region.current.name}::foundation-model/${var.foundation_model}"
       },
       {
+        Sid    = "CloudWatchLogs"
         Effect = "Allow"
         Action = [
           "logs:CreateLogGroup",
           "logs:CreateLogStream",
           "logs:PutLogEvents"
         ]
-        Resource = "arn:aws:logs:*:*:*"
+        # Scoped to this account and region — NOT arn:aws:logs:*:*:*
+        Resource = "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:log-group:/aws/bedrock/*"
       }
     ]
   })
@@ -55,6 +71,8 @@ resource "aws_bedrockagent_agent" "agent" {
     Environment = var.environment
     AgentName   = var.agent_name
   }
+
+  depends_on = [aws_iam_role_policy.bedrock_agent_policy]
 }
 
 resource "aws_bedrockagent_agent_alias" "live" {

@@ -69,12 +69,63 @@ resource "aws_s3_bucket_versioning" "ap_invoices" {
   }
 }
 
+# Block ALL public access
 resource "aws_s3_bucket_public_access_block" "ap_invoices" {
   bucket                  = aws_s3_bucket.ap_invoices.id
   block_public_acls       = true
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
+}
+
+# Enforce encryption at rest
+resource "aws_s3_bucket_server_side_encryption_configuration" "ap_invoices" {
+  bucket = aws_s3_bucket.ap_invoices.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+    bucket_key_enabled = true
+  }
+}
+
+# Deny all non-HTTPS requests
+resource "aws_s3_bucket_policy" "ap_invoices_policy" {
+  bucket = aws_s3_bucket.ap_invoices.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "DenyNonSSL"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource  = [
+          aws_s3_bucket.ap_invoices.arn,
+          "${aws_s3_bucket.ap_invoices.arn}/*"
+        ]
+        Condition = {
+          Bool = { "aws:SecureTransport" = "false" }
+        }
+      },
+      {
+        Sid    = "AllowAccountOnly"
+        Effect = "Deny"
+        Principal = "*"
+        Action = "s3:*"
+        Resource = [
+          aws_s3_bucket.ap_invoices.arn,
+          "${aws_s3_bucket.ap_invoices.arn}/*"
+        ]
+        Condition = {
+          StringNotEquals = {
+            "aws:PrincipalAccount" = data.aws_caller_identity.current.account_id
+          }
+        }
+      }
+    ]
+  })
+  depends_on = [aws_s3_bucket_public_access_block.ap_invoices]
 }
 
 # Demo invoice pre-loaded so the agent can process it immediately
@@ -127,6 +178,16 @@ resource "aws_dynamodb_table" "ap_ledger" {
     enabled        = true
   }
 
+  # Encryption at rest using AWS-owned key
+  server_side_encryption {
+    enabled = true
+  }
+
+  # Point-in-time recovery
+  point_in_time_recovery {
+    enabled = true
+  }
+
   tags = local.tags
 }
 
@@ -162,11 +223,14 @@ resource "aws_iam_role_policy" "lambda_policy" {
     Version = "2012-10-17"
     Statement = [
       {
+        Sid      = "CloudWatchLogs"
         Effect   = "Allow"
         Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
-        Resource = "arn:aws:logs:*:*:*"
+        # Scoped to this function's log group only
+        Resource = "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/${local.agent_name}-tools:*"
       },
       {
+        Sid    = "DynamoDBLedger"
         Effect = "Allow"
         Action = [
           "dynamodb:PutItem",
@@ -175,20 +239,25 @@ resource "aws_iam_role_policy" "lambda_policy" {
           "dynamodb:Scan",
           "dynamodb:UpdateItem"
         ]
+        # Scoped to this specific table only
         Resource = aws_dynamodb_table.ap_ledger.arn
       },
       {
+        Sid    = "S3InvoiceBucket"
         Effect = "Allow"
         Action = ["s3:GetObject", "s3:PutObject", "s3:ListBucket"]
+        # Scoped to this specific bucket only
         Resource = [
           aws_s3_bucket.ap_invoices.arn,
           "${aws_s3_bucket.ap_invoices.arn}/*"
         ]
       },
       {
-        Effect   = "Allow"
-        Action   = ["bedrock:InvokeModel"]
-        Resource = "*"
+        Sid    = "BedrockModel"
+        Effect = "Allow"
+        Action = ["bedrock:InvokeModel"]
+        # Scoped to the specific foundation model — not wildcard
+        Resource = "arn:aws:bedrock:${var.aws_region}::foundation-model/${var.foundation_model}"
       }
     ]
   })
@@ -204,6 +273,10 @@ resource "aws_lambda_function" "ap_agent_tools" {
   memory_size      = 256
   source_code_hash = data.archive_file.lambda_zip.output_base64sha256
 
+  # No public URL — invoked only by Bedrock via IAM
+  # Reserved concurrency can be set here for production
+  reserved_concurrent_executions = -1 # unlimited within account quota
+
   environment {
     variables = {
       AP_LEDGER_TABLE     = aws_dynamodb_table.ap_ledger.name
@@ -216,15 +289,27 @@ resource "aws_lambda_function" "ap_agent_tools" {
     }
   }
 
+  # Encrypt environment variables
+  kms_key_arn = null # uses AWS-managed key; swap for aws_kms_key.arn for CMK
+
   tags = local.tags
 }
 
+# CloudWatch Log Group with retention — prevents log accumulation
+resource "aws_cloudwatch_log_group" "lambda_logs" {
+  name              = "/aws/lambda/${aws_lambda_function.ap_agent_tools.function_name}"
+  retention_in_days = 30
+  tags              = local.tags
+}
+
 # Allow Bedrock agents to invoke the Lambda
+# Scoped to this account only via source_arn
 resource "aws_lambda_permission" "bedrock_invoke" {
   statement_id  = "AllowBedrockAgentInvoke"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.ap_agent_tools.function_name
   principal     = "bedrock.amazonaws.com"
+  # Scoped to agents in THIS account only — prevents cross-account invocation
   source_arn    = "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:agent/*"
 }
 
@@ -243,6 +328,54 @@ resource "aws_s3_bucket_public_access_block" "schema_bucket" {
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "schema_bucket" {
+  bucket = aws_s3_bucket.schema_bucket.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+    bucket_key_enabled = true
+  }
+}
+
+resource "aws_s3_bucket_policy" "schema_bucket_policy" {
+  bucket = aws_s3_bucket.schema_bucket.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "DenyNonSSL"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource  = [
+          aws_s3_bucket.schema_bucket.arn,
+          "${aws_s3_bucket.schema_bucket.arn}/*"
+        ]
+        Condition = {
+          Bool = { "aws:SecureTransport" = "false" }
+        }
+      },
+      {
+        Sid    = "AllowAccountOnly"
+        Effect = "Deny"
+        Principal = "*"
+        Action = "s3:*"
+        Resource = [
+          aws_s3_bucket.schema_bucket.arn,
+          "${aws_s3_bucket.schema_bucket.arn}/*"
+        ]
+        Condition = {
+          StringNotEquals = {
+            "aws:PrincipalAccount" = data.aws_caller_identity.current.account_id
+          }
+        }
+      }
+    ]
+  })
+  depends_on = [aws_s3_bucket_public_access_block.schema_bucket]
 }
 
 resource "aws_s3_object" "openapi_schema" {
@@ -282,27 +415,35 @@ resource "aws_iam_role_policy" "bedrock_agent_policy" {
     Version = "2012-10-17"
     Statement = [
       {
+        Sid    = "BedrockInvokeModel"
         Effect = "Allow"
         Action = [
           "bedrock:InvokeModel",
           "bedrock:InvokeModelWithResponseStream"
         ]
+        # Scoped to the specific model — not wildcard
         Resource = "arn:aws:bedrock:${var.aws_region}::foundation-model/${var.foundation_model}"
       },
       {
+        Sid      = "InvokeLambdaTools"
         Effect   = "Allow"
         Action   = ["lambda:InvokeFunction"]
+        # Scoped to this specific Lambda function only
         Resource = aws_lambda_function.ap_agent_tools.arn
       },
       {
+        Sid      = "ReadOpenAPISchema"
         Effect   = "Allow"
         Action   = ["s3:GetObject"]
+        # Scoped to this specific schema bucket only
         Resource = "${aws_s3_bucket.schema_bucket.arn}/*"
       },
       {
+        Sid      = "CloudWatchLogs"
         Effect   = "Allow"
         Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
-        Resource = "arn:aws:logs:*:*:*"
+        # Scoped to this account and region
+        Resource = "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/bedrock/*"
       }
     ]
   })
