@@ -9,6 +9,10 @@ terraform {
       source  = "hashicorp/awscc"
       version = "~> 1.0"
     }
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.0"
+    }
   }
 }
 
@@ -248,18 +252,61 @@ resource "aws_s3_object" "demo_aging_report_xlsx" {
 }
 
 # ---------------------------------------------------------------
-# ECR Repository — Agent container image
+# S3 Bucket — Agent code artifact (Code Zip deployment)
 # ---------------------------------------------------------------
-resource "aws_ecr_repository" "agent" {
-  name                 = "khyzr/ar-collections-agent"
-  image_tag_mutability = "MUTABLE"
-  force_delete         = true
+resource "aws_s3_bucket" "agent_code" {
+  bucket        = "${local.agent_name}-code-${data.aws_caller_identity.current.account_id}"
+  force_destroy = true
+  tags          = local.tags
+}
 
-  image_scanning_configuration {
-    scan_on_push = true
+resource "aws_s3_bucket_versioning" "agent_code" {
+  bucket = aws_s3_bucket.agent_code.id
+  versioning_configuration {
+    status = "Enabled"
   }
+}
 
-  tags = local.tags
+resource "aws_s3_bucket_server_side_encryption_configuration" "agent_code" {
+  bucket = aws_s3_bucket.agent_code.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+    bucket_key_enabled = true
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "agent_code" {
+  bucket                  = aws_s3_bucket.agent_code.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# ---------------------------------------------------------------
+# Code Zip — package agent.py + requirements.txt
+# ---------------------------------------------------------------
+data "archive_file" "agent_zip" {
+  type        = "zip"
+  output_path = "${path.module}/agent.zip"
+  source {
+    content  = file("${path.module}/../src/agent.py")
+    filename = "agent.py"
+  }
+  source {
+    content  = file("${path.module}/../requirements.txt")
+    filename = "requirements.txt"
+  }
+}
+
+resource "aws_s3_object" "agent_code" {
+  bucket      = aws_s3_bucket.agent_code.id
+  key         = "agent.zip"
+  source      = data.archive_file.agent_zip.output_path
+  source_hash = data.archive_file.agent_zip.output_base64sha256
+  tags        = local.tags
 }
 
 # ---------------------------------------------------------------
@@ -298,17 +345,6 @@ resource "aws_iam_role_policy" "agentcore_policy" {
         ]
         # Scoped to the specific foundation model -- not wildcard
         Resource = "arn:aws:bedrock:*::foundation-model/*"
-      },
-      {
-        Sid    = "ECRAccess"
-        Effect = "Allow"
-        Action = [
-          "ecr:GetAuthorizationToken",
-          "ecr:BatchGetImage",
-          "ecr:GetDownloadUrlForLayer"
-        ]
-        # ecr:GetAuthorizationToken requires Resource: "*" by AWS design
-        Resource = "*"
       },
       {
         Sid    = "CloudWatch"
@@ -373,43 +409,20 @@ resource "aws_iam_role_policy" "agentcore_policy" {
           aws_s3_bucket.ar_reports.arn,
           "${aws_s3_bucket.ar_reports.arn}/*"
         ]
+      },
+      {
+        Sid    = "AgentCodeBucket"
+        Effect = "Allow"
+        Action = ["s3:GetObject"]
+        Resource = "arn:aws:s3:::${aws_s3_bucket.agent_code.bucket}/agent.zip"
       }
     ]
   })
 }
 
 # ---------------------------------------------------------------
-# Docker Build & Push — ARM64 image to ECR
-# NOTE: Requires Docker with buildx installed on the machine
-#       running `terraform apply`. AgentCore requires ARM64 images.
-# ---------------------------------------------------------------
-resource "null_resource" "docker_build_push" {
-  triggers = {
-    agent_py_hash     = filemd5("${path.module}/../src/agent.py")
-    dockerfile_hash   = filemd5("${path.module}/../Dockerfile")
-    requirements_hash = filemd5("${path.module}/../requirements.txt")
-  }
-
-  provisioner "local-exec" {
-    command = <<-EOT
-      # Authenticate with ECR
-      aws ecr get-login-password --region ${var.aws_region} | \
-        docker login --username AWS --password-stdin \
-        ${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com
-
-      # Build for ARM64 (required by AgentCore Runtime) and push
-      cd ${path.module}/..
-      docker buildx build --platform linux/arm64 \
-        -t ${aws_ecr_repository.agent.repository_url}:latest \
-        --push .
-    EOT
-  }
-
-  depends_on = [aws_ecr_repository.agent]
-}
-
-# ---------------------------------------------------------------
-# AgentCore Runtime
+# AgentCore Runtime — Code Zip (Direct Code Deployment)
+# No Docker, no ECR, no buildx required.
 # ---------------------------------------------------------------
 resource "awscc_bedrockagentcore_runtime" "ar_agent" {
   agent_runtime_name = "${local.agent_name}"
@@ -417,8 +430,10 @@ resource "awscc_bedrockagentcore_runtime" "ar_agent" {
   role_arn           = aws_iam_role.agentcore_role.arn
 
   agent_runtime_artifact = {
-    container_configuration = {
-      container_uri = "${aws_ecr_repository.agent.repository_url}:latest"
+    code_artifact = {
+      s3_location = {
+        uri = "s3://${aws_s3_bucket.agent_code.bucket}/agent.zip"
+      }
     }
   }
 
@@ -437,7 +452,7 @@ resource "awscc_bedrockagentcore_runtime" "ar_agent" {
     AR_CONTACT_NAME      = "Accounts Receivable Team"
   }
 
-  depends_on = [null_resource.docker_build_push]
+  depends_on = [aws_s3_object.agent_code]
 }
 
 # ---------------------------------------------------------------
@@ -453,9 +468,9 @@ output "agent_runtime_id" {
   description = "AgentCore Runtime ID"
 }
 
-output "ecr_repository_url" {
-  value       = aws_ecr_repository.agent.repository_url
-  description = "ECR repository URL for the agent container image"
+output "agent_code_bucket" {
+  value       = aws_s3_bucket.agent_code.bucket
+  description = "S3 bucket storing the agent code zip artifact"
 }
 
 output "dynamodb_table_name" {

@@ -10,9 +10,9 @@ output "agent_runtime_id" {
   value       = awscc_bedrockagentcore_runtime.agent.agent_runtime_id
 }
 
-output "ecr_repository_url" {
-  description = "ECR repository URL. Tag and push your ARM64 image here."
-  value       = aws_ecr_repository.agent.repository_url
+output "agent_code_bucket" {
+  description = "S3 bucket storing the agent code zip artifact"
+  value       = aws_s3_bucket.agent_code.bucket
 }
 
 output "iam_role_arn" {

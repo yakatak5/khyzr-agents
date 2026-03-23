@@ -15,9 +15,9 @@ End-to-end accounts payable automation:
 ## Deploy
 
 > **Prerequisites:**
-> - Docker with buildx installed (required for ARM64 container builds)
-> - `docker buildx create --use` if buildx builder not set up
-> - AWS credentials with ECR, AgentCore, DynamoDB, S3 permissions
+> - AWS credentials with AgentCore, DynamoDB, S3 permissions
+> - Terraform ≥ 1.5.0
+> - **No Docker required** — uses Code Zip (Direct Code Deployment)
 
 ```bash
 cd agents/36-ap-automation-agent/infra
@@ -26,16 +26,16 @@ terraform plan -out=tfplan
 terraform apply tfplan
 ```
 
-Takes ~5 minutes. Terraform will:
+Takes ~1 minute. Terraform will:
 
-- ✅ Create ECR repository (`khyzr/ap-automation-agent`)
-- ✅ Build ARM64 Docker image and push to ECR
-- ✅ Create AgentCore Runtime with Claude Sonnet
+- ✅ Zip `src/agent.py` + `requirements.txt` into `agent.zip`
+- ✅ Upload `agent.zip` to a dedicated S3 code bucket
+- ✅ Create AgentCore Runtime pointing at the S3 code artifact
 - ✅ Create DynamoDB table (AP ledger)
 - ✅ Create S3 bucket (invoice storage + demo invoice pre-loaded)
 - ✅ Create IAM role with least-privilege permissions
 
-> **Note:** The `null_resource.docker_build_push` provisioner runs `docker buildx build --platform linux/arm64` automatically during `terraform apply`. Docker must be installed on the machine running Terraform.
+> **Note:** No Docker, no ECR, no buildx needed. `terraform apply` handles everything automatically via `data "archive_file"` + `aws_s3_object`.
 
 ---
 
@@ -157,7 +157,7 @@ User / CLI / SDK
        │
        │  invoke_agent_runtime (payload: {"prompt": "..."})
        ▼
-AgentCore Runtime (ARM64 container on bedrock-agentcore.amazonaws.com)
+AgentCore Runtime (Code Zip on bedrock-agentcore.amazonaws.com)
        │
        │  Strands Agent orchestrates tool calls (Claude Sonnet)
        ▼
@@ -183,35 +183,24 @@ agents/36-ap-automation-agent/
 │   ├── agent.py              # BedrockAgentCoreApp + all 5 tool functions
 │   └── demo_invoice.xlsx     # Demo Excel invoice (pre-loaded to S3 by Terraform)
 ├── infra/
-│   └── main.tf               # Terraform — AgentCore + ECR + DynamoDB + S3 + IAM
+│   └── main.tf               # Terraform — AgentCore + S3 code bucket + DynamoDB + S3 + IAM
 ├── docs/
 │   └── DEMO.md               # This file
-├── requirements.txt          # Python dependencies (includes bedrock-agentcore)
-└── Dockerfile                # ARM64 container build (required by AgentCore)
+└── requirements.txt          # Python dependencies (includes bedrock-agentcore)
 ```
 
 ---
 
-## Build & Push Docker Image Manually
+## Redeploy After Code Changes
 
-If you need to rebuild the image without running `terraform apply`:
+When `agent.py` or `requirements.txt` changes, just re-run:
 
 ```bash
-# From repo root
-./scripts/build-push.sh agents/36-ap-automation-agent us-east-1
-
-# Or manually:
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-ECR_REPO="$ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/khyzr/ap-automation-agent"
-
-aws ecr get-login-password --region us-east-1 | \
-  docker login --username AWS --password-stdin "$ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com"
-
-docker buildx build --platform linux/arm64 \
-  -t "$ECR_REPO:latest" \
-  --push \
-  agents/36-ap-automation-agent/
+cd agents/36-ap-automation-agent/infra
+terraform apply
 ```
+
+Terraform detects the file hash change, rebuilds the zip, uploads it to S3, and updates the AgentCore Runtime automatically. No Docker required. Takes ~10 seconds.
 
 ---
 
@@ -224,24 +213,11 @@ terraform destroy
 
 Removes all AWS resources. No ongoing costs after destroy.
 
-> **Note:** `force_delete = true` is set on the ECR repo and `force_destroy = true` on S3 buckets, so Terraform will clean them up automatically.
+> **Note:** `force_destroy = true` is set on all S3 buckets, so Terraform will clean them up automatically.
 
 ---
 
 ## Troubleshooting
-
-**"Docker not found" during terraform apply**
-→ Install Docker with buildx support. Then: `docker buildx create --use`
-
-**"ARM64 build failed" (exec format error)**
-→ Run `docker buildx create --use` to set up a buildx builder with ARM64 emulation.
-→ On Apple Silicon Macs, ARM64 builds natively.
-
-**"Container not READY" in AgentCore**
-→ Check CloudWatch logs: `/aws/bedrock-agentcore/<runtime-id>`
-```bash
-aws logs tail /aws/bedrock-agentcore/$(terraform -chdir=infra output -raw agent_runtime_id) --follow
-```
 
 **"ResourceNotFoundException" on DynamoDB write**
 → The env var `AP_LEDGER_TABLE` must match the actual table name. Verify:
@@ -256,4 +232,9 @@ terraform -chdir=infra output dynamodb_table_name
 → Make sure the payload is JSON-encoded bytes with a `"prompt"` key:
 ```python
 payload=json.dumps({"prompt": "your message here"}).encode()
+```
+
+**Check AgentCore logs**
+```bash
+aws logs tail /aws/bedrock-agentcore/$(terraform -chdir=infra output -raw agent_runtime_id) --follow
 ```

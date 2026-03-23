@@ -1,13 +1,15 @@
 # infra/modules/agentcore-runtime/main.tf
-# Reusable Terraform module for deploying a Strands agent to AgentCore Runtime.
+# Reusable Terraform module for deploying a Strands agent to AgentCore Runtime
+# using Code Zip (Direct Code Deployment) — no Docker, no ECR required.
 #
 # Usage example:
 #   module "my_agent" {
-#     source           = "../../infra/modules/agentcore-runtime"
-#     agent_name       = "my-agent"
+#     source            = "../../infra/modules/agentcore-runtime"
+#     agent_name        = "my-agent"
 #     agent_description = "Does cool things"
-#     image_uri        = "${aws_ecr_repository.my_agent.repository_url}:latest"
-#     environment_vars = {
+#     agent_py_path     = "${path.module}/../src/agent.py"
+#     requirements_path = "${path.module}/../requirements.txt"
+#     environment_vars  = {
 #       MY_TABLE = aws_dynamodb_table.my_table.name
 #     }
 #     extra_iam_statements = [
@@ -30,27 +32,79 @@ terraform {
       source  = "hashicorp/awscc"
       version = "~> 1.0"
     }
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.0"
+    }
   }
 }
 
 data "aws_caller_identity" "current" {}
 
 # ---------------------------------------------------------------
-# ECR Repository
+# S3 Bucket — Agent code artifact
 # ---------------------------------------------------------------
-resource "aws_ecr_repository" "agent" {
-  name                 = "khyzr/${var.agent_name}"
-  image_tag_mutability = "MUTABLE"
-  force_delete         = true
-
-  image_scanning_configuration {
-    scan_on_push = true
-  }
+resource "aws_s3_bucket" "agent_code" {
+  bucket        = "${var.agent_name}-${var.environment}-code-${data.aws_caller_identity.current.account_id}"
+  force_destroy = true
 
   tags = {
     Agent       = var.agent_name
     Environment = var.environment
     ManagedBy   = "agentcore-runtime-module"
+  }
+}
+
+resource "aws_s3_bucket_versioning" "agent_code" {
+  bucket = aws_s3_bucket.agent_code.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "agent_code" {
+  bucket = aws_s3_bucket.agent_code.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+    bucket_key_enabled = true
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "agent_code" {
+  bucket                  = aws_s3_bucket.agent_code.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# ---------------------------------------------------------------
+# Code Zip — package agent.py + requirements.txt
+# ---------------------------------------------------------------
+data "archive_file" "agent_zip" {
+  type        = "zip"
+  output_path = "${path.module}/agent-${var.agent_name}.zip"
+  source {
+    content  = file(var.agent_py_path)
+    filename = "agent.py"
+  }
+  source {
+    content  = file(var.requirements_path)
+    filename = "requirements.txt"
+  }
+}
+
+resource "aws_s3_object" "agent_code" {
+  bucket      = aws_s3_bucket.agent_code.id
+  key         = "agent.zip"
+  source      = data.archive_file.agent_zip.output_path
+  source_hash = data.archive_file.agent_zip.output_base64sha256
+
+  tags = {
+    Agent       = var.agent_name
+    Environment = var.environment
   }
 }
 
@@ -102,17 +156,6 @@ resource "aws_iam_role_policy" "agentcore_base_policy" {
           Resource = "arn:aws:bedrock:*::foundation-model/*"
         },
         {
-          Sid    = "ECRAccess"
-          Effect = "Allow"
-          Action = [
-            "ecr:GetAuthorizationToken",
-            "ecr:BatchGetImage",
-            "ecr:GetDownloadUrlForLayer"
-          ]
-          # ecr:GetAuthorizationToken requires Resource: "*" by AWS design
-          Resource = "*"
-        },
-        {
           Sid    = "CloudWatch"
           Effect = "Allow"
           Action = [
@@ -147,6 +190,12 @@ resource "aws_iam_role_policy" "agentcore_base_policy" {
             "bedrock-agentcore:GetWorkloadAccessTokenForJWT"
           ]
           Resource = "arn:aws:bedrock-agentcore:${var.aws_region}:${data.aws_caller_identity.current.account_id}:workload-identity-directory/default"
+        },
+        {
+          Sid    = "AgentCodeBucket"
+          Effect = "Allow"
+          Action = ["s3:GetObject"]
+          Resource = "arn:aws:s3:::${aws_s3_bucket.agent_code.bucket}/agent.zip"
         }
       ],
       var.extra_iam_statements
@@ -155,7 +204,7 @@ resource "aws_iam_role_policy" "agentcore_base_policy" {
 }
 
 # ---------------------------------------------------------------
-# AgentCore Runtime
+# AgentCore Runtime — Code Zip (Direct Code Deployment)
 # ---------------------------------------------------------------
 resource "awscc_bedrockagentcore_runtime" "agent" {
   agent_runtime_name = "${var.agent_name}-${var.environment}"
@@ -163,8 +212,10 @@ resource "awscc_bedrockagentcore_runtime" "agent" {
   role_arn           = aws_iam_role.agentcore_role.arn
 
   agent_runtime_artifact = {
-    container_configuration = {
-      container_uri = var.image_uri
+    code_artifact = {
+      s3_location = {
+        uri = "s3://${aws_s3_bucket.agent_code.bucket}/agent.zip"
+      }
     }
   }
 
@@ -179,4 +230,6 @@ resource "awscc_bedrockagentcore_runtime" "agent" {
     },
     var.environment_vars
   )
+
+  depends_on = [aws_s3_object.agent_code]
 }

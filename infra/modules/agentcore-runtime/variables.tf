@@ -28,13 +28,18 @@ variable "foundation_model" {
   default     = "anthropic.claude-sonnet-4-5-v1:0"
 }
 
-variable "image_uri" {
-  description = "Full ECR image URI including tag. Example: 123456789.dkr.ecr.us-east-1.amazonaws.com/khyzr/my-agent:latest"
+variable "agent_py_path" {
+  description = "Absolute or relative path to the agent's agent.py source file. Example: ${path.module}/../src/agent.py"
+  type        = string
+}
+
+variable "requirements_path" {
+  description = "Absolute or relative path to the agent's requirements.txt file. Example: ${path.module}/../requirements.txt"
   type        = string
 }
 
 variable "environment_vars" {
-  description = "Additional environment variables to inject into the AgentCore Runtime container"
+  description = "Additional environment variables to inject into the AgentCore Runtime"
   type        = map(string)
   default     = {}
 }

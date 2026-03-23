@@ -8,8 +8,8 @@ Covers 5 domains: Executive Strategy, Sales & Marketing, Operations, Finance & A
 - **Agent Framework:** AWS Strands Agents SDK (`strands-agents`)
 - **LLM:** Amazon Bedrock — Claude Sonnet (`us.anthropic.claude-sonnet-4-5-v1:0`)
 - **Deployment Runtime:** Amazon Bedrock AgentCore Runtime (`awscc_bedrockagentcore_runtime`)
-- **Container:** Docker ARM64 → ECR (`--platform=linux/arm64`)
-- **Infrastructure:** Terraform (`aws` + `awscc` providers)
+- **Code Deployment:** Code Zip (Direct Code Deployment) — S3 code artifact, no Docker required
+- **Infrastructure:** Terraform (`aws` + `awscc` + `archive` providers)
 - **Invocation:** `bedrock-agentcore:InvokeAgentRuntime`
 - **Region:** us-east-1 (default)
 
@@ -80,10 +80,11 @@ Covers 5 domains: Executive Strategy, Sales & Marketing, Operations, Finance & A
 ### AgentCore Agents (36, 40) — NEW Pattern
 - Entry point: `src/agent.py` with `BedrockAgentCoreApp` + `@app.entrypoint`
 - Tools use `@tool` decorator from strands
-- Dockerfile: `FROM --platform=linux/arm64 python:3.11-slim` (ARM64 required)
+- Deployment: Code Zip (Direct Code Deployment) — no Dockerfile, no ECR
+- Terraform: `data "archive_file"` zips `agent.py` + `requirements.txt` → `aws_s3_object` uploads to S3 → `awscc_bedrockagentcore_runtime` references `code_artifact.s3_location`
 - requirements.txt: includes `bedrock-agentcore>=0.1.0`
-- Terraform: `awscc_bedrockagentcore_runtime` + ECR repo + `null_resource` for Docker build/push
 - Invocation: `bedrock-agentcore invoke-agent-runtime --agent-runtime-arn <arn> --payload '{"prompt": "..."}'`
+- Redeployment: `terraform apply` — detects hash changes, rebuilds zip, re-uploads to S3 (~10s)
 
 ### Legacy Agents (all others) — Lambda Pattern
 - Entry point: `src/agent.py` with `run(input_data: dict) -> dict` + `lambda_handler(event, context)`
@@ -94,16 +95,16 @@ Covers 5 domains: Executive Strategy, Sales & Marketing, Operations, Finance & A
 
 ### Reusable Terraform Module
 `infra/modules/agentcore-runtime/` — drop-in module for deploying any Strands agent to AgentCore Runtime.
-Provides: ECR repo, IAM role (with base AgentCore permissions), `awscc_bedrockagentcore_runtime` resource.
-Pass `extra_iam_statements` for agent-specific permissions (DynamoDB, S3, etc.).
+Provides: S3 code bucket, archive_file zip, aws_s3_object upload, IAM role (with base AgentCore permissions), `awscc_bedrockagentcore_runtime` resource using `code_artifact.s3_location`.
+Pass `agent_py_path`, `requirements_path`, and `extra_iam_statements` for agent-specific permissions (DynamoDB, S3, etc.).
 
 ### Build Script
-`scripts/build-push.sh <agent-dir> [region]` — builds ARM64 Docker image and pushes to ECR.
+`scripts/build-push.sh <agent-dir> [region]` — legacy script for container-based agents (not needed for agents 36/40).
 
 ## Security Standards (enforced on all agents)
 - S3: public access blocked, AES256 encryption, HTTPS-only bucket policy, account-scoped deny
 - DynamoDB: server-side encryption, point-in-time recovery enabled
-- IAM: least-privilege; `ecr:GetAuthorizationToken` legitimately requires `Resource: "*"` (AWS design)
+- IAM: least-privilege; ECR permissions removed from agents 36/40 (Code Zip needs only `s3:GetObject` on the code bucket)
 - AgentCore: `bedrock-agentcore.amazonaws.com` service principal with `aws:SourceAccount` condition
-- Containers: ARM64, Python 3.11-slim base, no root process
+- Code Zip: agent.py + requirements.txt zipped and uploaded to private S3 bucket with versioning + AES256 encryption
 - Bedrock IAM: SourceAccount condition to prevent confused-deputy attacks

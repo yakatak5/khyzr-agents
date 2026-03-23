@@ -35,11 +35,9 @@ aws bedrock list-foundation-models --region us-east-1 \
 
 # 4. Check the agent directory exists
 ls agents/<XX-agent-name>/infra/main.tf
-
-# 5. For AgentCore agents (36, 40): verify Docker with buildx is installed
-docker buildx version
-# If not set up: docker buildx create --use
 ```
+
+For **AgentCore agents (36, 40)**: No Docker required. `terraform apply` automatically zips and uploads the agent code to S3.
 
 If Bedrock model access is not enabled, direct the user to:
 AWS Console → Amazon Bedrock → Model access → Enable Claude Sonnet → Submit
@@ -55,7 +53,12 @@ terraform plan -out=tfplan
 terraform apply tfplan
 ```
 
-For **AgentCore agents (36, 40)**: Terraform will automatically build and push the ARM64 Docker image to ECR via the `null_resource.docker_build_push` provisioner. **Docker with buildx must be installed** on the machine running `terraform apply`.
+For **AgentCore agents (36, 40)**: Terraform will automatically:
+1. Zip `src/agent.py` + `requirements.txt` into `agent.zip` (via `data "archive_file"`)
+2. Upload `agent.zip` to a dedicated S3 code bucket (via `aws_s3_object`)
+3. Create/update the AgentCore Runtime pointing at the S3 artifact
+
+**No Docker, no ECR, no buildx required.** Deploys in ~1 minute.
 
 Capture all outputs from `terraform apply`. They contain everything needed for testing.
 
@@ -73,12 +76,12 @@ terraform output -json
 
 ---
 
-### ✅ Agent XX Deployed Successfully (AgentCore Runtime)
+### ✅ Agent XX Deployed Successfully (AgentCore Runtime — Code Zip)
 
 **Resources created:**
 - 🤖 AgentCore Runtime ARN: `<agent_runtime_arn>`
 - 🆔 AgentCore Runtime ID: `<agent_runtime_id>`
-- 📦 ECR Repository: `<ecr_repository_url>`
+- 📦 Agent Code Bucket: `<agent_code_bucket>`
 - 🗄️ DynamoDB Table: `<dynamodb_table_name>` *(if applicable)*
 - 🪣 S3 Bucket: `<invoices_bucket or ar_reports_bucket>` *(if applicable)*
 
@@ -87,7 +90,7 @@ terraform output -json
 <demo_invoke_command from terraform output>
 ```
 
-**Check container logs:**
+**Check logs:**
 ```bash
 aws logs tail /aws/bedrock-agentcore/<agent_runtime_id> --follow --region us-east-1
 ```
@@ -114,16 +117,16 @@ Report the result to the user.
 
 ---
 
-## Rebuild & Push Docker Image Only
+## Redeploy After Code Changes (AgentCore agents)
 
-If the agent code changed but infrastructure didn't:
+When `agent.py` or `requirements.txt` changes:
 
 ```bash
-# From repo root
-./scripts/build-push.sh agents/<XX-agent-name> us-east-1
+cd agents/<XX-agent-name>/infra
+terraform apply
 ```
 
-Or re-run `terraform apply` — it detects file hash changes and re-triggers the build.
+Terraform detects hash changes, rebuilds the zip, re-uploads to S3, and updates the runtime. Takes ~10 seconds. No Docker required.
 
 ---
 
@@ -167,22 +170,8 @@ export AWS_PROFILE=your-profile
 ### "Model access denied" / ResourceNotFoundException on foundation model
 Enable Claude Sonnet in AWS Console → Bedrock → Model access
 
-### "Docker not found" during terraform apply (AgentCore agents)
-Install Docker with buildx support:
-```bash
-# After installing Docker:
-docker buildx create --use
-```
-
-### "ARM64 build failed" (exec format error)
-Set up a buildx builder with ARM64 emulation:
-```bash
-docker buildx create --use
-# On Apple Silicon, ARM64 builds natively without emulation
-```
-
 ### "Container not READY" — AgentCore runtime not starting
-Check CloudWatch logs for the container:
+Check logs for the runtime:
 ```bash
 aws logs tail /aws/bedrock-agentcore/<agent_runtime_id> --follow --region us-east-1
 # Common causes: missing Python dependency, import error, bad entrypoint
@@ -195,10 +184,6 @@ aws bedrock list-foundation-models --region us-east-1 \
   --query "modelSummaries[?providerName=='Anthropic'].modelId" --output table
 ```
 Update `foundation_model` in `terraform.tfvars`
-
-### "AccessDenied on ecr:GetAuthorizationToken"
-The AgentCore IAM role needs `ecr:GetAuthorizationToken` with `Resource: "*"` (AWS design requirement).
-Verify `aws_iam_role_policy.agentcore_policy` includes the ECR statement.
 
 ### "Invalid payload" when invoking AgentCore runtime
 Make sure payload is JSON-encoded bytes with a `"prompt"` key:
@@ -214,9 +199,8 @@ Legacy agents only — not applicable to AgentCore agents.
 # List AgentCore runtimes
 aws bedrock-agentcore list-agent-runtimes --region us-east-1
 
-# List ECR repositories matching khyzr
-aws ecr describe-repositories --region us-east-1 \
-  --query "repositories[?starts_with(repositoryName,'khyzr')].repositoryName" --output table
+# List S3 code buckets
+aws s3 ls | grep khyzr
 
 # List all DynamoDB tables matching khyzr
 aws dynamodb list-tables --region us-east-1 \
@@ -233,4 +217,4 @@ aws dynamodb list-tables --region us-east-1 \
 | Light (100 invocations) | ~$1–5 | ~$0.05 | ~$0.01 | ~$0.01 | **~$1–5** |
 | Medium (1,000 invocations) | ~$10–50 | ~$0.50 | ~$0.10 | ~$0.05 | **~$10–50** |
 
-Fully containerized — zero compute cost when idle (AgentCore scales to zero).
+Code Zip deployment — zero compute cost when idle (AgentCore scales to zero).
