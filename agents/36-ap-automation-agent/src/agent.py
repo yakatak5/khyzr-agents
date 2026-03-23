@@ -561,7 +561,7 @@ def _get_agent():
     if _agent is None:
         logger.info("Initialising BedrockModel + Agent (first invocation)...")
         model = BedrockModel(
-            model_id=os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-5"),
+            model_id=os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-3-5-sonnet-20241022-v2:0"),
             region_name=os.environ.get("AWS_REGION_NAME", os.environ.get("AWS_REGION", "us-east-1")),
         )
         _agent = Agent(
