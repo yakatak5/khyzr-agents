@@ -2,14 +2,14 @@
   "openapi": "3.0.0",
   "info": {
     "title": "AR Collections Agent API",
-    "description": "Accounts receivable collections tools — aging report fetch (Excel/JSON), risk scoring, email drafting, escalation, and status updates",
+    "description": "Accounts receivable collections tools for aging report retrieval, risk scoring, collection email drafting, account escalation, and status updates",
     "version": "1.0.0"
   },
   "paths": {
     "/fetch-aging-report": {
       "post": {
-        "summary": "Fetch the AR aging report — supports Excel (.xlsx) from S3 or returns demo data",
-        "description": "Returns aging buckets and account-level detail. Pass excel_source as an S3 URI to parse a real Excel aging report (.xlsx). Falls back to demo data if not provided.",
+        "summary": "Fetch the AR aging report \u2014 supports mock data, JSON, or Excel (.xlsx) source",
+        "description": "Returns accounts receivable aging buckets and individual account details. Pass excel_source as an S3 URI (s3://bucket/key.xlsx) or file path to parse a real Excel aging report. Falls back to demo mock data if no source is provided or parsing fails.",
         "operationId": "fetchAgingReport",
         "requestBody": {
           "required": false,
@@ -18,9 +18,18 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "as_of_date": { "type": "string", "description": "Report date YYYY-MM-DD (defaults to today)" },
-                  "min_days_overdue": { "type": "integer", "description": "Filter to accounts overdue by at least this many days" },
-                  "excel_source": { "type": "string", "description": "Optional S3 URI to an .xlsx aging report (e.g. s3://bucket/reports/aging.xlsx)" }
+                  "as_of_date": {
+                    "type": "string",
+                    "description": "Report date in YYYY-MM-DD format (defaults to today)"
+                  },
+                  "min_days_overdue": {
+                    "type": "integer",
+                    "description": "Filter: only return accounts overdue by at least this many days"
+                  },
+                  "excel_source": {
+                    "type": "string",
+                    "description": "Optional S3 URI (s3://bucket/key.xlsx) or file path to an Excel aging report. If provided, parses the Excel file instead of returning mock data."
+                  }
                 }
               }
             }
@@ -28,8 +37,25 @@
         },
         "responses": {
           "200": {
-            "description": "AR aging report with summary buckets and account list",
-            "content": { "application/json": { "schema": { "type": "object" } } }
+            "description": "AR aging report with account details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "report_date": {
+                      "type": "string"
+                    },
+                    "summary": {
+                      "type": "object"
+                    },
+                    "accounts": {
+                      "type": "array"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -37,7 +63,7 @@
     "/score-collection-risk": {
       "post": {
         "summary": "Score accounts by collection risk tier",
-        "description": "Ranks accounts as Critical/High/Medium/Low based on days overdue, balance size, and payment history. Returns sorted list with recommended actions.",
+        "description": "Evaluates each account using days overdue, outstanding balance, and payment history. Returns accounts ranked by risk score with tier (Critical/High/Medium/Low) and recommended action.",
         "operationId": "scoreCollectionRisk",
         "requestBody": {
           "required": true,
@@ -46,25 +72,47 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "account_data": { "type": "string", "description": "JSON string from fetch-aging-report" }
+                  "account_data": {
+                    "type": "string",
+                    "description": "JSON string from fetch-aging-report containing the accounts list"
+                  }
                 },
-                "required": ["account_data"]
+                "required": [
+                  "account_data"
+                ]
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Scored accounts sorted by risk with tier summary",
-            "content": { "application/json": { "schema": { "type": "object" } } }
+            "description": "Risk-scored accounts ranked by priority",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "scored_accounts": {
+                      "type": "array"
+                    },
+                    "tier_summary": {
+                      "type": "object"
+                    },
+                    "total_at_risk": {
+                      "type": "number"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
     },
     "/draft-collection-email": {
       "post": {
-        "summary": "Draft a personalized collection email for an account",
-        "description": "Generates a tier-appropriate collection email — friendly for Low risk, formal for Medium, urgent for High, final notice for Critical.",
+        "summary": "Draft a personalized collection email for a specific account",
+        "description": "Generates a tier-appropriate collection email. Tone scales from friendly (Low) to formal (Medium) to urgent (High) to final-demand (Critical). Subject line and body are tailored to the outstanding balance and days overdue.",
         "operationId": "draftCollectionEmail",
         "requestBody": {
           "required": true,
@@ -73,30 +121,72 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "account_id":   { "type": "string",  "description": "Account identifier" },
-                  "company_name": { "type": "string",  "description": "Customer company name" },
-                  "contact_name": { "type": "string",  "description": "AP contact name" },
-                  "days_overdue": { "type": "integer", "description": "Days the invoice is overdue" },
-                  "balance":      { "type": "number",  "description": "Outstanding balance amount" },
-                  "risk_tier":    { "type": "string",  "description": "Risk tier: Low, Medium, High, or Critical" }
+                  "account_id": {
+                    "type": "string",
+                    "description": "Account identifier (e.g. ACC-10021)"
+                  },
+                  "company_name": {
+                    "type": "string",
+                    "description": "Customer company name"
+                  },
+                  "contact_name": {
+                    "type": "string",
+                    "description": "Name of the accounts payable contact at the customer"
+                  },
+                  "days_overdue": {
+                    "type": "integer",
+                    "description": "Number of days the invoice is overdue"
+                  },
+                  "balance": {
+                    "type": "number",
+                    "description": "Outstanding balance amount in USD"
+                  },
+                  "risk_tier": {
+                    "type": "string",
+                    "description": "Risk tier from score-collection-risk: Low, Medium, High, or Critical"
+                  }
                 },
-                "required": ["account_id", "company_name", "contact_name", "days_overdue", "balance", "risk_tier"]
+                "required": [
+                  "account_id",
+                  "company_name",
+                  "contact_name",
+                  "days_overdue",
+                  "balance",
+                  "risk_tier"
+                ]
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Drafted email with subject and body",
-            "content": { "application/json": { "schema": { "type": "object" } } }
+            "description": "Drafted collection email with subject and body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "email_subject": {
+                      "type": "string"
+                    },
+                    "email_body": {
+                      "type": "string"
+                    },
+                    "tone": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
     },
     "/escalate-account": {
       "post": {
-        "summary": "Escalate an overdue account to the appropriate team",
-        "description": "Determines escalation path based on risk tier — notifies AR Manager and/or CFO, flags for service suspension review on Critical/High accounts.",
+        "summary": "Escalate an overdue account to the appropriate internal team",
+        "description": "Routes the account to AR manager or CFO based on risk tier. Flags Critical and High accounts for service suspension review. Returns escalation actions taken and notification status.",
         "operationId": "escalateAccount",
         "requestBody": {
           "required": true,
@@ -105,14 +195,39 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "account_id":   { "type": "string",  "description": "Account identifier" },
-                  "risk_tier":    { "type": "string",  "description": "Risk tier: Low, Medium, High, or Critical" },
-                  "balance":      { "type": "number",  "description": "Outstanding balance" },
-                  "days_overdue": { "type": "integer", "description": "Days overdue" },
-                  "company_name": { "type": "string",  "description": "Customer company name" },
-                  "email_draft":  { "type": "string",  "description": "JSON string of drafted collection email" }
+                  "account_id": {
+                    "type": "string",
+                    "description": "Account identifier to escalate"
+                  },
+                  "risk_tier": {
+                    "type": "string",
+                    "description": "Risk tier: Low, Medium, High, or Critical"
+                  },
+                  "balance": {
+                    "type": "number",
+                    "description": "Outstanding balance amount in USD"
+                  },
+                  "days_overdue": {
+                    "type": "integer",
+                    "description": "Days the account is overdue"
+                  },
+                  "company_name": {
+                    "type": "string",
+                    "description": "Customer company name"
+                  },
+                  "email_draft": {
+                    "type": "string",
+                    "description": "JSON string of drafted collection email from draft-collection-email"
+                  }
                 },
-                "required": ["account_id", "risk_tier", "balance", "days_overdue", "company_name", "email_draft"]
+                "required": [
+                  "account_id",
+                  "risk_tier",
+                  "balance",
+                  "days_overdue",
+                  "company_name",
+                  "email_draft"
+                ]
               }
             }
           }
@@ -120,15 +235,29 @@
         "responses": {
           "200": {
             "description": "Escalation confirmation with actions taken",
-            "content": { "application/json": { "schema": { "type": "object" } } }
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "escalation_level": {
+                      "type": "string"
+                    },
+                    "actions_taken": {
+                      "type": "array"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
     },
     "/update-collection-status": {
       "post": {
-        "summary": "Update collection status for an account in DynamoDB",
-        "description": "Records the collection activity and status update. Schedules next follow-up action based on status.",
+        "summary": "Update collection status for an account in the AR system",
+        "description": "Records the current collection status in DynamoDB and returns the next scheduled action. Status transitions drive the collections workflow: reminder_sent \u2192 escalated \u2192 payment_plan / in_collections \u2192 paid.",
         "operationId": "updateCollectionStatus",
         "requestBody": {
           "required": true,
@@ -137,15 +266,31 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "account_id": { "type": "string", "description": "Account identifier" },
+                  "account_id": {
+                    "type": "string",
+                    "description": "Account identifier to update (e.g. ACC-10021)"
+                  },
                   "new_status": {
                     "type": "string",
                     "description": "New collection status",
-                    "enum": ["reminder_sent", "escalated", "payment_plan", "in_collections", "paid", "disputed"]
+                    "enum": [
+                      "reminder_sent",
+                      "escalated",
+                      "payment_plan",
+                      "in_collections",
+                      "paid",
+                      "disputed"
+                    ]
                   },
-                  "notes": { "type": "string", "description": "Optional notes about the collection activity" }
+                  "notes": {
+                    "type": "string",
+                    "description": "Optional notes about the collection activity or outcome"
+                  }
                 },
-                "required": ["account_id", "new_status"]
+                "required": [
+                  "account_id",
+                  "new_status"
+                ]
               }
             }
           }
@@ -153,7 +298,21 @@
         "responses": {
           "200": {
             "description": "Status update confirmation with next action",
-            "content": { "application/json": { "schema": { "type": "object" } } }
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    },
+                    "entry": {
+                      "type": "object"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
