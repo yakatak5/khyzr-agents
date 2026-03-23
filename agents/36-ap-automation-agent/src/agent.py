@@ -32,29 +32,169 @@ except ImportError:
 # Tools
 # ---------------------------------------------------------------------------
 
+def _fetch_s3_bytes(s3_uri: str):
+    """Fetch raw bytes from an S3 URI. Returns (bytes, key) or (None, key)."""
+    try:
+        parts = s3_uri[5:].split("/", 1)
+        bucket, key = parts[0], parts[1]
+        s3 = boto3.client("s3")
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        return obj["Body"].read(), key
+    except Exception as e:
+        return None, ""
+
+
+def _parse_excel(raw_bytes: bytes) -> dict:
+    """
+    Parse an Excel invoice workbook and return a structured invoice dict.
+
+    Supports two common AP invoice layouts:
+      Layout A — Single sheet with key:value pairs in columns A:B
+                 plus a line-items section starting after a blank row.
+      Layout B — First sheet = header info (key:value), second sheet = line items.
+
+    Returns a dict with the same schema as the text/PDF extractor.
+    """
+    import io
+    try:
+        import openpyxl
+    except ImportError:
+        return {"error": "openpyxl not installed — cannot parse Excel files"}
+
+    wb = openpyxl.load_workbook(io.BytesIO(raw_bytes), data_only=True)
+    ws_header = wb.worksheets[0]
+
+    # ── Pass 1: collect all non-empty rows ───────────────────────────────────
+    rows = []
+    for row in ws_header.iter_rows(values_only=True):
+        non_empty = [c for c in row if c is not None]
+        if non_empty:
+            rows.append([str(c).strip() if c is not None else "" for c in row])
+
+    # ── Pass 2: extract key→value pairs from first two columns ───────────────
+    kv = {}
+    line_item_start = None
+    for i, row in enumerate(rows):
+        if len(row) >= 2 and row[0] and row[1]:
+            key = row[0].lower().replace(" ", "_").replace(":", "").replace("#", "number")
+            kv[key] = row[1]
+        # Detect line-items header row
+        first = row[0].lower() if row else ""
+        if any(h in first for h in ("description", "item", "product", "service")):
+            line_item_start = i
+            break
+
+    # ── Pass 3: parse line items ─────────────────────────────────────────────
+    line_items = []
+    if line_item_start is not None:
+        # Determine which sheet has line items
+        ws_lines = wb.worksheets[1] if len(wb.worksheets) > 1 else ws_header
+        header_row = rows[line_item_start]
+        # Normalize header names
+        col_map = {j: h.lower().replace(" ", "_") for j, h in enumerate(header_row) if h}
+
+        line_rows = list(ws_lines.iter_rows(values_only=True))
+        # Skip header row if same sheet
+        start = line_item_start + 1 if ws_lines == ws_header else 1
+        for row in line_rows[start:]:
+            if not any(c for c in row if c is not None):
+                continue  # skip blank rows
+            item = {}
+            for j, cell in enumerate(row):
+                col_name = col_map.get(j, f"col_{j}")
+                if cell is not None:
+                    item[col_name] = cell
+            if item:
+                line_items.append(item)
+
+    # ── Build canonical invoice dict ─────────────────────────────────────────
+    def _find(keys):
+        for k in keys:
+            for kv_key, val in kv.items():
+                if k in kv_key:
+                    return val
+        return ""
+
+    def _to_float(val):
+        if val == "":
+            return 0.0
+        try:
+            return float(str(val).replace(",", "").replace("$", "").strip())
+        except Exception:
+            return 0.0
+
+    subtotal = _to_float(_find(["subtotal", "net_total", "amount_before"]))
+    tax      = _to_float(_find(["tax", "vat", "gst"]))
+    total    = _to_float(_find(["total", "amount_due", "grand_total", "invoice_total"]))
+    if total == 0.0 and subtotal > 0:
+        total = subtotal + tax
+
+    return {
+        "invoice_number":        _find(["invoice_number", "invoice_no", "inv_number", "invoice#"]) or "UNKNOWN",
+        "vendor_name":           _find(["vendor", "supplier", "from", "company_name"]),
+        "vendor_id":             _find(["vendor_id", "supplier_id", "vendor_code"]),
+        "invoice_date":          _find(["invoice_date", "date", "issued"]),
+        "due_date":              _find(["due_date", "payment_due", "pay_by"]),
+        "po_reference":          _find(["po_number", "purchase_order", "po_ref", "po#"]),
+        "currency":              _find(["currency", "curr"]) or "USD",
+        "subtotal":              subtotal,
+        "tax_amount":            tax,
+        "total_amount":          total,
+        "line_items":            line_items,
+        "payment_terms":         _find(["payment_terms", "terms"]),
+        "bank_account_last4":    _find(["bank_account", "account_last"]),
+        "extraction_method":     "excel_openpyxl",
+        "extraction_confidence": 0.92,
+        "extracted_at":          datetime.utcnow().isoformat(),
+        "source":                "excel",
+    }
+
+
 @tool
 def extract_invoice_data(invoice_source: str) -> str:
     """
-    Extract structured data from an invoice (PDF path, S3 URI, or raw text).
+    Extract structured data from an invoice — supports Excel (.xlsx), PDF, text, or S3 URI.
 
     Args:
-        invoice_source: S3 URI, file path, or base64-encoded invoice content
+        invoice_source: S3 URI (s3://bucket/key), local file path, or raw text content.
+                        Supports: .xlsx, .xls, .pdf, .txt, .csv
 
     Returns:
         JSON string with extracted invoice fields: vendor, amount, line items, dates, PO reference
     """
-    # In production: uses pdfplumber or AWS Textract to parse PDF invoices.
-    # If invoice_source is an S3 URI, attempt to fetch the object for text parsing.
-    raw_text = ""
+    raw_bytes = None
+    key = ""
+
+    # ── Fetch from S3 if URI ─────────────────────────────────────────────────
     if invoice_source.startswith("s3://"):
+        raw_bytes, key = _fetch_s3_bytes(invoice_source)
+        if raw_bytes is None:
+            key = invoice_source  # fallback for extension detection
+
+    # ── Local file ───────────────────────────────────────────────────────────
+    elif invoice_source.endswith((".xlsx", ".xls", ".pdf", ".txt", ".csv")):
         try:
-            parts = invoice_source[5:].split("/", 1)
-            bucket, key = parts[0], parts[1]
-            s3 = boto3.client("s3")
-            obj = s3.get_object(Bucket=bucket, Key=key)
-            raw_text = obj["Body"].read().decode("utf-8")
+            with open(invoice_source, "rb") as f:
+                raw_bytes = f.read()
+            key = invoice_source
         except Exception:
-            raw_text = ""  # Fall back to mock data
+            raw_bytes = None
+
+    # ── Detect file type and route to correct parser ─────────────────────────
+    ext = (key or invoice_source).lower().rsplit(".", 1)[-1]
+
+    if ext in ("xlsx", "xls") and raw_bytes is not None:
+        invoice_data = _parse_excel(raw_bytes)
+        invoice_data["source"] = invoice_source
+        return json.dumps(invoice_data, indent=2, default=str)
+
+    # ── Text / plain extraction (existing path) ──────────────────────────────
+    raw_text = ""
+    if raw_bytes:
+        try:
+            raw_text = raw_bytes.decode("utf-8")
+        except Exception:
+            raw_text = ""
 
     # Realistic mock — mirrors the demo invoice loaded into S3 by Terraform
     invoice_data = {

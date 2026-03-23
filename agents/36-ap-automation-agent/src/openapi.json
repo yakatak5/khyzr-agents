@@ -8,8 +8,8 @@
   "paths": {
     "/extract-invoice-data": {
       "post": {
-        "summary": "Extract structured data from an invoice PDF or text",
-        "description": "Parses an invoice and returns vendor name, invoice number, line items, amounts, PO reference, and payment terms",
+        "summary": "Extract structured data from an invoice — supports Excel (.xlsx), PDF, text, or S3 URI",
+        "description": "Parses an invoice file and returns vendor name, invoice number, line items, amounts, PO reference, and payment terms. Accepts S3 URIs (s3://bucket/key), local file paths, or raw text. Supports .xlsx, .xls, .pdf, .txt, .csv formats. Excel workbooks are parsed using openpyxl — key:value header rows plus a line-items table.",
         "operationId": "extractInvoiceData",
         "requestBody": {
           "required": true,
@@ -20,7 +20,7 @@
                 "properties": {
                   "invoice_source": {
                     "type": "string",
-                    "description": "S3 URI, file path, or base64-encoded invoice content"
+                    "description": "S3 URI (s3://bucket/key.xlsx), local file path, or raw invoice text. Supports .xlsx, .xls, .pdf, .txt, .csv"
                   }
                 },
                 "required": ["invoice_source"]

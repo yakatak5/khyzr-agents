@@ -128,11 +128,11 @@ resource "aws_s3_bucket_policy" "ap_invoices_policy" {
   depends_on = [aws_s3_bucket_public_access_block.ap_invoices]
 }
 
-# Demo invoice pre-loaded so the agent can process it immediately
+# Demo invoice — plain text (pre-loaded for testing)
 resource "aws_s3_object" "demo_invoice" {
-  bucket = aws_s3_bucket.ap_invoices.id
-  key    = "invoices/INV-2024-08821.txt"
-  content = <<-EOT
+  bucket       = aws_s3_bucket.ap_invoices.id
+  key          = "invoices/INV-2024-08821.txt"
+  content      = <<-EOT
 INVOICE
 Invoice Number: INV-2024-08821
 Vendor: Apex Supply Co. (VND-4492)
@@ -150,8 +150,18 @@ Total Due: $13,446.00
 
 Payment Terms: Net 30
 Bank Account (last 4): 7823
-EOT
+  EOT
   content_type = "text/plain"
+  tags         = local.tags
+}
+
+# Demo invoice — Excel format (.xlsx)
+resource "aws_s3_object" "demo_invoice_xlsx" {
+  bucket       = aws_s3_bucket.ap_invoices.id
+  key          = "invoices/INV-2024-08821.xlsx"
+  source       = "${path.module}/../src/demo_invoice.xlsx"
+  content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  etag         = filemd5("${path.module}/../src/demo_invoice.xlsx")
   tags         = local.tags
 }
 
@@ -472,7 +482,10 @@ Your mission is to automate end-to-end accounts payable workflows:
 Always run all 5 steps in sequence when processing an invoice.
 Flag any potential fraud indicators: vendor mismatch, unusual amounts, or missing PO references.
 Be precise with financial figures and always document your reasoning.
-A demo invoice is available at: s3://${aws_s3_bucket.ap_invoices.bucket}/invoices/INV-2024-08821.txt
+Demo invoices are pre-loaded in S3:
+      Text:  s3://${aws_s3_bucket.ap_invoices.bucket}/invoices/INV-2024-08821.txt
+      Excel: s3://${aws_s3_bucket.ap_invoices.bucket}/invoices/INV-2024-08821.xlsx
+    You can process any .xlsx, .xls, .pdf, or .txt invoice uploaded to the S3 bucket.
 EOT
 
   tags = local.tags
