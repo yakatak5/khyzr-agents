@@ -11,12 +11,32 @@ Deploys as a containerized service on AgentCore — no Lambda required.
 
 import json
 import os
+import logging
 import boto3
 from datetime import datetime
 
-from strands import Agent, tool
-from strands.models import BedrockModel
-from bedrock_agentcore.runtime import BedrockAgentCoreApp
+# Configure logging early so startup errors appear in CloudWatch
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("ap-automation-agent")
+logger.info("AP Automation Agent starting up...")
+
+try:
+    from strands import Agent, tool
+    from strands.models import BedrockModel
+    logger.info("strands-agents imported successfully")
+except ImportError as e:
+    logger.error(f"Failed to import strands: {e}")
+    raise
+
+try:
+    from bedrock_agentcore.runtime import BedrockAgentCoreApp
+    logger.info("bedrock-agentcore imported successfully")
+except ImportError as e:
+    logger.error(f"Failed to import bedrock_agentcore: {e}")
+    raise
 
 
 # ---------------------------------------------------------------------------
@@ -562,9 +582,16 @@ def invoke(payload):
             "flag discrepancies, route for approval, and update the ledger.",
         ),
     )
-    result = agent(user_message)
-    return {"result": str(result)}
+    logger.info(f"Received prompt: {user_message[:100]}...")
+    try:
+        result = agent(user_message)
+        logger.info("Agent invocation completed successfully")
+        return {"result": str(result)}
+    except Exception as e:
+        logger.error(f"Agent invocation failed: {e}", exc_info=True)
+        raise
 
 
 if __name__ == "__main__":
+    logger.info("Starting AgentCore HTTP server on port 8080")
     app.run()

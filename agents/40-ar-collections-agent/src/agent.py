@@ -11,12 +11,32 @@ Deploys as a containerized service on AgentCore — no Lambda required.
 import json
 import os
 import io
+import logging
 import boto3
 from datetime import datetime
 
-from strands import Agent, tool
-from strands.models import BedrockModel
-from bedrock_agentcore.runtime import BedrockAgentCoreApp
+# Configure logging early so startup errors appear in CloudWatch
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("ar-collections-agent")
+logger.info("AR Collections Agent starting up...")
+
+try:
+    from strands import Agent, tool
+    from strands.models import BedrockModel
+    logger.info("strands-agents imported successfully")
+except ImportError as e:
+    logger.error(f"Failed to import strands: {e}")
+    raise
+
+try:
+    from bedrock_agentcore.runtime import BedrockAgentCoreApp
+    logger.info("bedrock-agentcore imported successfully")
+except ImportError as e:
+    logger.error(f"Failed to import bedrock_agentcore: {e}")
+    raise
 
 
 # ---------------------------------------------------------------------------
@@ -631,6 +651,7 @@ model = BedrockModel(
     model_id=os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-5"),
     region_name=os.environ.get("AWS_REGION_NAME", os.environ.get("AWS_REGION", "us-east-1")),
 )
+logger.info(f"BedrockModel initialised: {os.environ.get('BEDROCK_MODEL_ID', 'us.anthropic.claude-sonnet-4-5')}")
 
 agent = Agent(
     model=model,
@@ -660,9 +681,16 @@ def invoke(payload):
             "draft collection emails, escalate high-risk accounts, update statuses.",
         ),
     )
-    result = agent(user_message)
-    return {"result": str(result)}
+    logger.info(f"Received prompt: {user_message[:100]}...")
+    try:
+        result = agent(user_message)
+        logger.info("Agent invocation completed successfully")
+        return {"result": str(result)}
+    except Exception as e:
+        logger.error(f"Agent invocation failed: {e}", exc_info=True)
+        raise
 
 
 if __name__ == "__main__":
+    logger.info("Starting AgentCore HTTP server on port 8080")
     app.run()
