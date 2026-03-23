@@ -1,11 +1,11 @@
 """
 Market Intelligence Agent
 =========================
-Continuously monitors competitor news, SEC filings, and analyst reports.
+Monitors competitor news, SEC filings, and analyst reports.
 Surfaces competitor moves and market shifts to executive stakeholders.
 Emails a daily briefing to a configured list of recipients via SES.
 
-Built with AWS Strands Agents + AgentCore on AWS Bedrock (Claude Sonnet).
+Built with AWS Strands Agents + Amazon Bedrock AgentCore (Claude Sonnet).
 """
 
 import json
@@ -16,7 +16,11 @@ import httpx
 from datetime import datetime, timedelta
 from strands import Agent, tool
 from strands.models import BedrockModel
+from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("market-intelligence-agent")
 
 # ---------------------------------------------------------------------------
 # Tools
@@ -25,52 +29,53 @@ from strands.models import BedrockModel
 @tool
 def search_news(query: str, days_back: int = 7) -> str:
     """
-    Search recent news articles about a company or topic.
+    Search recent news articles about a company or topic using GDELT.
+    No API key required — GDELT is a free global news index.
 
     Args:
         query: Search query (e.g. company name, topic, competitor)
         days_back: How many days back to search (default 7)
 
     Returns:
-        JSON string of news articles with title, source, date, summary, url
+        JSON string of news articles with title, source, date, url
     """
-    api_key = os.environ.get("NEWS_API_KEY")
-    from_date = (datetime.utcnow() - timedelta(days=days_back)).strftime("%Y-%m-%d")
-
-    if api_key:
-        url = "https://newsapi.org/v2/everything"
-        params = {
-            "q": query,
-            "from": from_date,
-            "sortBy": "relevancy",
-            "pageSize": 10,
-            "apiKey": api_key,
-            "language": "en",
-        }
-        try:
-            resp = httpx.get(url, params=params, timeout=15)
-            data = resp.json()
-            articles = [
-                {
-                    "title": a.get("title"),
-                    "source": a.get("source", {}).get("name"),
-                    "date": a.get("publishedAt"),
-                    "summary": a.get("description"),
-                    "url": a.get("url"),
-                }
-                for a in data.get("articles", [])
-            ]
-            return json.dumps(articles, indent=2)
-        except Exception as e:
-            return json.dumps({"error": str(e)})
-    else:
-        return json.dumps({"error": "NEWS_API_KEY not configured."})
+    try:
+        resp = httpx.get(
+            "https://api.gdeltproject.org/api/v2/doc/doc",
+            params={
+                "query": query,
+                "mode": "artlist",
+                "maxrecords": 10,
+                "format": "json",
+                "TIMESPAN": f"{days_back * 24}H",
+            },
+            headers={"User-Agent": "MarketIntelligenceAgent/1.0 contact@example.com"},
+            timeout=15,
+        )
+        data = resp.json()
+        articles = [
+            {
+                "title": a.get("title"),
+                "source": a.get("domain"),
+                "date": a.get("seendate"),
+                "url": a.get("url"),
+                "language": a.get("language", "English"),
+            }
+            for a in data.get("articles", [])
+            if a.get("language", "English") == "English"
+        ]
+        if not articles:
+            return json.dumps({"message": f"No recent English news found for '{query}' in the last {days_back} days."})
+        return json.dumps(articles, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
 
 
 @tool
 def search_sec_filings(company_name: str, filing_type: str = "8-K") -> str:
     """
     Search SEC EDGAR for recent filings by a company.
+    No API key required — EDGAR is a public US government database.
 
     Args:
         company_name: Company name or ticker symbol
@@ -100,11 +105,14 @@ def search_sec_filings(company_name: str, filing_type: str = "8-K") -> str:
                 "company": h["_source"].get("display_names", [{}])[0].get("name")
                     if h["_source"].get("display_names") else company_name,
                 "form_type": h["_source"].get("form_type"),
+                "description": h["_source"].get("file_date", ""),
                 "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company="
                     + company_name.replace(" ", "+") + "&type=" + filing_type,
             }
             for h in hits[:5]
         ]
+        if not filings:
+            return json.dumps({"message": f"No recent {filing_type} filings found for '{company_name}'."})
         return json.dumps(filings, indent=2)
     except Exception as e:
         return json.dumps({"error": str(e)})
@@ -113,7 +121,7 @@ def search_sec_filings(company_name: str, filing_type: str = "8-K") -> str:
 @tool
 def summarize_competitive_landscape(competitors: list, topic: str = "recent strategy and moves") -> str:
     """
-    Aggregate intelligence across multiple competitors into a structured briefing.
+    Aggregate intelligence across multiple competitors into a structured briefing template.
 
     Args:
         competitors: List of competitor names to analyze
@@ -149,10 +157,10 @@ def store_intelligence_report(report: str, report_name: str) -> str:
     Returns:
         S3 URI where the report was stored
     """
-    bucket = os.environ.get("INTELLIGENCE_BUCKET", "market-intelligence-reports")
-    s3 = boto3.client("s3")
+    bucket = os.environ.get("INTELLIGENCE_BUCKET", "khyzr-market-intelligence-demo-110276528370")
+    s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION_NAME", "us-east-1"))
     timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-    key = f"reports/{timestamp}-{report_name.replace(' ', '-').lower()}.md"
+    key = f"reports/{timestamp}-{report_name.replace(' ', '-').lower()[:50]}.md"
     try:
         s3.put_object(
             Bucket=bucket,
@@ -162,7 +170,7 @@ def store_intelligence_report(report: str, report_name: str) -> str:
         )
         return json.dumps({"status": "stored", "s3_uri": f"s3://{bucket}/{key}", "key": key})
     except Exception as e:
-        return json.dumps({"error": str(e), "note": "Report generated but not stored."})
+        return json.dumps({"error": str(e), "note": "Report generated but not stored to S3."})
 
 
 @tool
@@ -178,17 +186,18 @@ def send_briefing_email(report_markdown: str, subject: str, recipient_emails: li
     Returns:
         JSON string with send status and SES message IDs
     """
-    ses = boto3.client("ses", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+    ses = boto3.client("ses", region_name=os.environ.get("AWS_REGION_NAME", "us-east-1"))
     sender = os.environ.get("SES_SENDER_EMAIL", "")
 
     if not sender:
-        return json.dumps({"error": "SES_SENDER_EMAIL not configured in environment variables."})
+        return json.dumps({
+            "status": "skipped",
+            "reason": "SES_SENDER_EMAIL not configured — report stored to S3 instead.",
+        })
     if not recipient_emails:
         return json.dumps({"error": "No recipient emails provided."})
 
-    # Convert markdown to basic HTML for email clients
     html_body = _markdown_to_html(report_markdown)
-
     results = []
     for email in recipient_emails:
         try:
@@ -208,171 +217,129 @@ def send_briefing_email(report_markdown: str, subject: str, recipient_emails: li
             results.append({"email": email, "status": "failed", "error": str(e)})
 
     sent = sum(1 for r in results if r["status"] == "sent")
-    failed = len(results) - sent
-    return json.dumps({"sent": sent, "failed": failed, "details": results}, indent=2)
+    return json.dumps({"sent": sent, "failed": len(results) - sent, "details": results}, indent=2)
 
 
 def _markdown_to_html(md: str) -> str:
-    """Convert markdown to simple HTML for email delivery."""
     html = md
-    # Headers
     html = re.sub(r"^# (.+)$", r"<h1>\1</h1>", html, flags=re.MULTILINE)
     html = re.sub(r"^## (.+)$", r"<h2>\1</h2>", html, flags=re.MULTILINE)
     html = re.sub(r"^### (.+)$", r"<h3>\1</h3>", html, flags=re.MULTILINE)
-    # Bold
     html = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", html)
-    # Bullet lists
     html = re.sub(r"^- (.+)$", r"<li>\1</li>", html, flags=re.MULTILINE)
-    html = re.sub(r"(<li>.*</li>)", r"<ul>\1</ul>", html, flags=re.DOTALL)
-    # Paragraphs (double newlines)
     html = re.sub(r"\n\n", "</p><p>", html)
-    html = f"""
-    <html><body style="font-family: Arial, sans-serif; max-width: 800px; margin: auto; padding: 20px; color: #333;">
-    <p>{html}</p>
-    <hr style="margin-top: 40px; border: none; border-top: 1px solid #eee;">
-    <p style="font-size: 12px; color: #999;">Market Intelligence Agent — Powered by AWS Bedrock + Strands</p>
-    </body></html>
-    """
-    return html
+    return f"""<html><body style="font-family:Arial,sans-serif;max-width:800px;margin:auto;padding:20px;color:#333;"><p>{html}</p>
+<hr style="margin-top:40px;border:none;border-top:1px solid #eee;">
+<p style="font-size:12px;color:#999;">Market Intelligence Agent — Powered by AWS Bedrock AgentCore + Strands</p>
+</body></html>"""
 
 
 # ---------------------------------------------------------------------------
-# Agent definition
+# Agent (lazy init singleton)
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """You are the Market Intelligence Agent — an expert competitive intelligence analyst.
 
-Your job is to monitor competitors, surface market shifts, and deliver concise, actionable briefings to executive stakeholders via email.
+Your job is to monitor competitors, surface market shifts, and deliver concise, actionable briefings to executive stakeholders.
 
 When given a list of competitors or a market to monitor:
-1. Search for recent news on each competitor (last 7 days by default)
-2. Check SEC filings for material events (8-K filings signal major moves)
-3. Synthesize findings into a structured executive briefing in markdown
-4. Highlight: key moves, market shifts, threats, opportunities, recommended actions
-5. Store the final report to S3
-6. Email the briefing to all configured recipients
+1. Search for recent news on each competitor using search_news (GDELT — no API key needed)
+2. Check SEC filings for material events using search_sec_filings (8-K signals major moves)
+3. Use summarize_competitive_landscape to structure your findings
+4. Synthesize findings into a structured executive briefing in markdown
+5. Highlight: key moves, market shifts, threats, opportunities, recommended actions
+6. Store the final report to S3 using store_intelligence_report
+7. Attempt to email using send_briefing_email (gracefully skips if SES not configured)
 
 Always be concise. Executives need signal, not noise.
 Format reports in clean markdown with clear sections.
-Flag anything that requires immediate attention with 🚨.
-The email subject should follow this format: "🧠 Market Intelligence Briefing — [Date]"
+Flag anything requiring immediate attention with 🚨.
 """
 
+_agent = None
 
-def create_agent() -> Agent:
-    """Create and return the configured Market Intelligence Agent."""
-    model = BedrockModel(
-        model_id=os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-sonnet-4-5"),
-        region_name=os.environ.get("AWS_REGION", "us-east-1"),
-    )
-
-    agent = Agent(
-        model=model,
-        system_prompt=SYSTEM_PROMPT,
-        tools=[
-            search_news,
-            search_sec_filings,
-            summarize_competitive_landscape,
-            store_intelligence_report,
-            send_briefing_email,
-        ],
-    )
-    return agent
+def _get_agent() -> Agent:
+    global _agent
+    if _agent is None:
+        logger.info("Initializing Market Intelligence Agent...")
+        model = BedrockModel(
+            model_id=os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-3-5-sonnet-20241022-v2:0"),
+            region_name=os.environ.get("AWS_REGION_NAME", "us-east-1"),
+        )
+        _agent = Agent(
+            model=model,
+            system_prompt=SYSTEM_PROMPT,
+            tools=[
+                search_news,
+                search_sec_filings,
+                summarize_competitive_landscape,
+                store_intelligence_report,
+                send_briefing_email,
+            ],
+        )
+        logger.info("Agent ready.")
+    return _agent
 
 
 # ---------------------------------------------------------------------------
-# Lambda handler (AgentCore entry point)
+# AgentCore entry point
 # ---------------------------------------------------------------------------
 
-def handler(event: dict, context) -> dict:
+app = BedrockAgentCoreApp()
+
+@app.entrypoint
+def invoke(payload: dict) -> dict:
     """
-    AWS Lambda handler — AgentCore invocation entry point.
+    AgentCore invocation entry point.
 
-    Expected event payload:
+    Payload:
     {
-        "competitors": ["Company A", "Company B"],
-        "recipients": ["exec@company.com", "cto@company.com"],  // optional, falls back to env var
-        "topic": "product launches and partnerships",            // optional
-        "days_back": 7                                           // optional
+        "prompt": "Run a competitive intelligence briefing on OpenAI and Anthropic",
+        // OR structured:
+        "competitors": ["OpenAI", "Anthropic"],
+        "topic": "product launches and partnerships",
+        "days_back": 7
     }
     """
-    competitors = event.get("competitors", [])
-    topic = event.get("topic", "recent strategy, product moves, and market positioning")
-    days_back = event.get("days_back", 7)
+    # Support both free-form prompt and structured payload
+    prompt = payload.get("prompt")
 
-    # Recipients: event payload takes priority, then env var (comma-separated list)
-    recipients = event.get("recipients") or _get_recipients_from_env()
+    if not prompt:
+        competitors = payload.get("competitors", [])
+        topic = payload.get("topic", "recent strategy, product moves, and market positioning")
+        days_back = payload.get("days_back", 7)
+        recipients = payload.get("recipients") or _get_recipients_from_env()
 
-    if not competitors:
-        return {
-            "statusCode": 400,
-            "body": json.dumps({"error": "No competitors specified in event payload"}),
-        }
+        if not competitors:
+            return {"error": "Provide 'prompt' or 'competitors' in payload."}
 
-    if not recipients:
-        return {
-            "statusCode": 400,
-            "body": json.dumps({"error": "No recipients configured. Set BRIEFING_RECIPIENTS env var or pass 'recipients' in payload."}),
-        }
-
-    agent = create_agent()
-    today = datetime.utcnow().strftime("%B %d, %Y")
-
-    prompt = f"""
-Generate a competitive intelligence briefing for the following companies:
-{', '.join(competitors)}
-
+        today = datetime.utcnow().strftime("%B %d, %Y")
+        prompt = f"""
+Generate a competitive intelligence briefing for: {', '.join(competitors)}
 Focus: {topic}
-Timeframe: Last {days_back} days
-Today's date: {today}
+Timeframe: Last {days_back} days. Today: {today}
 
-Steps:
-1. For each competitor, search recent news
-2. For each competitor, check for SEC filings (8-K for public companies)
-3. Synthesize all findings into a structured executive briefing in markdown
-4. Store the report to S3
-5. Email the briefing to these recipients: {recipients}
-   Use subject: "🧠 Market Intelligence Briefing — {today}"
+1. Search recent news for each competitor
+2. Check SEC filings (8-K) for each
+3. Synthesize into a structured markdown briefing
+4. Store to S3
+5. Email to: {recipients or 'no recipients configured — skip email'}
+Subject: "🧠 Market Intelligence Briefing — {today}"
 """
 
-    response = agent(prompt)
-
-    return {
-        "statusCode": 200,
-        "body": json.dumps(
-            {
-                "status": "completed",
-                "competitors": competitors,
-                "recipients": recipients,
-                "response": str(response),
-            }
-        ),
-    }
+    logger.info(f"Running agent with prompt: {prompt[:100]}...")
+    try:
+        result = _get_agent()(prompt)
+        return {"result": str(result)}
+    except Exception as e:
+        logger.error(f"Agent error: {e}", exc_info=True)
+        raise
 
 
 def _get_recipients_from_env() -> list:
-    """Parse comma-separated email list from BRIEFING_RECIPIENTS env var."""
     raw = os.environ.get("BRIEFING_RECIPIENTS", "")
     return [e.strip() for e in raw.split(",") if e.strip()]
 
 
-# ---------------------------------------------------------------------------
-# Local dev runner
-# ---------------------------------------------------------------------------
-
 if __name__ == "__main__":
-    import sys
-
-    competitors = sys.argv[1:] if len(sys.argv) > 1 else ["OpenAI", "Google DeepMind", "Anthropic"]
-    print(f"Running Market Intelligence Agent for: {competitors}\n")
-
-    agent = create_agent()
-    today = datetime.utcnow().strftime("%B %d, %Y")
-    recipients = _get_recipients_from_env() or ["test@example.com"]
-
-    result = agent(
-        f"Give me a competitive intelligence briefing on {', '.join(competitors)} — "
-        f"focus on the last 7 days. Today is {today}. "
-        f"Store to S3 and email to: {recipients}"
-    )
-    print(result)
+    app.run()
