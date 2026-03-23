@@ -647,23 +647,34 @@ Cash flow impact: Flag any single account where overdue balance exceeds $100K. M
 
 Your tone adapts to the situation: warm for Low-risk, professional for Medium, firm for High, and unambiguous for Critical. Every communication should motivate prompt payment while leaving the relationship intact where possible."""
 
-model = BedrockModel(
-    model_id=os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-5"),
-    region_name=os.environ.get("AWS_REGION_NAME", os.environ.get("AWS_REGION", "us-east-1")),
-)
-logger.info(f"BedrockModel initialised: {os.environ.get('BEDROCK_MODEL_ID', 'us.anthropic.claude-sonnet-4-5')}")
+# ---------------------------------------------------------------------------
+# Lazy agent initialisation — deferred until first invocation so AgentCore
+# runtime startup completes well within the init timeout window.
+# ---------------------------------------------------------------------------
 
-agent = Agent(
-    model=model,
-    tools=[
-        fetch_aging_report,
-        score_collection_risk,
-        draft_collection_email,
-        escalate_account,
-        update_collection_status,
-    ],
-    system_prompt=SYSTEM_PROMPT,
-)
+_agent = None
+
+def _get_agent():
+    global _agent
+    if _agent is None:
+        logger.info("Initialising BedrockModel + Agent (first invocation)...")
+        model = BedrockModel(
+            model_id=os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-5"),
+            region_name=os.environ.get("AWS_REGION_NAME", os.environ.get("AWS_REGION", "us-east-1")),
+        )
+        _agent = Agent(
+            model=model,
+            tools=[
+                fetch_aging_report,
+                score_collection_risk,
+                draft_collection_email,
+                escalate_account,
+                update_collection_status,
+            ],
+            system_prompt=SYSTEM_PROMPT,
+        )
+        logger.info("Agent ready.")
+    return _agent
 
 
 # ---------------------------------------------------------------------------
@@ -683,7 +694,7 @@ def invoke(payload):
     )
     logger.info(f"Received prompt: {user_message[:100]}...")
     try:
-        result = agent(user_message)
+        result = _get_agent()(user_message)
         logger.info("Agent invocation completed successfully")
         return {"result": str(result)}
     except Exception as e:

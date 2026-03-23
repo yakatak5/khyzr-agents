@@ -549,22 +549,34 @@ Financial controls you enforce:
 
 Always maintain GAAP compliance and internal audit readiness. Document every decision with clear rationale. Flag 🚨 on any potential fraud indicators (vendor mismatch, unusual bank account changes, round-number amounts). Your work directly impacts cash flow and vendor relationships — be accurate and timely."""
 
-model = BedrockModel(
-    model_id=os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-5"),
-    region_name=os.environ.get("AWS_REGION_NAME", os.environ.get("AWS_REGION", "us-east-1")),
-)
+# ---------------------------------------------------------------------------
+# Lazy agent initialisation — deferred until first invocation so AgentCore
+# runtime startup completes well within the init timeout window.
+# ---------------------------------------------------------------------------
 
-agent = Agent(
-    model=model,
-    tools=[
-        extract_invoice_data,
-        match_purchase_order,
-        flag_discrepancies,
-        route_for_approval,
-        update_ap_ledger,
-    ],
-    system_prompt=SYSTEM_PROMPT,
-)
+_agent = None
+
+def _get_agent():
+    global _agent
+    if _agent is None:
+        logger.info("Initialising BedrockModel + Agent (first invocation)...")
+        model = BedrockModel(
+            model_id=os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-5"),
+            region_name=os.environ.get("AWS_REGION_NAME", os.environ.get("AWS_REGION", "us-east-1")),
+        )
+        _agent = Agent(
+            model=model,
+            tools=[
+                extract_invoice_data,
+                match_purchase_order,
+                flag_discrepancies,
+                route_for_approval,
+                update_ap_ledger,
+            ],
+            system_prompt=SYSTEM_PROMPT,
+        )
+        logger.info("Agent ready.")
+    return _agent
 
 
 # ---------------------------------------------------------------------------
@@ -584,7 +596,7 @@ def invoke(payload):
     )
     logger.info(f"Received prompt: {user_message[:100]}...")
     try:
-        result = agent(user_message)
+        result = _get_agent()(user_message)
         logger.info("Agent invocation completed successfully")
         return {"result": str(result)}
     except Exception as e:
