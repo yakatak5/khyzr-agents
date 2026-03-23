@@ -5,8 +5,8 @@ Automates accounts payable workflows: extracts invoice data from PDFs,
 matches against purchase orders, flags discrepancies, routes for approval,
 and updates the AP ledger.
 
-Built with AWS Strands Agents + AgentCore on AWS Bedrock (Claude Sonnet).
-Deploys as an AWS Lambda function serving as a Bedrock Action Group executor.
+Built with AWS Strands Agents + Amazon Bedrock AgentCore Runtime (Claude Sonnet).
+Deploys as a containerized service on AgentCore — no Lambda required.
 """
 
 import json
@@ -14,18 +14,16 @@ import os
 import boto3
 from datetime import datetime
 
+from strands import Agent, tool
+from strands.models import BedrockModel
+from bedrock_agentcore.runtime import BedrockAgentCoreApp
+
+
 # ---------------------------------------------------------------------------
-# Optional strands imports — only needed for local run() mode
+# AgentCore app
 # ---------------------------------------------------------------------------
-try:
-    from strands import Agent, tool
-    from strands.models import BedrockModel
-    STRANDS_AVAILABLE = True
-except ImportError:
-    STRANDS_AVAILABLE = False
-    # Provide a no-op decorator so the tool functions still work as plain functions
-    def tool(fn):
-        return fn
+
+app = BedrockAgentCoreApp()
 
 
 # ---------------------------------------------------------------------------
@@ -505,77 +503,7 @@ def update_ap_ledger(invoice_number: str, invoice_data: str, approval_status: st
 
 
 # ---------------------------------------------------------------------------
-# Lambda handler — Bedrock Action Group executor
-# ---------------------------------------------------------------------------
-
-def lambda_handler(event, context):
-    """Handle Bedrock Agent Action Group invocations."""
-    action_group = event.get("actionGroup", "")
-    api_path = event.get("apiPath", "")   # e.g. "/extract-invoice-data"
-    parameters = event.get("parameters", [])
-    request_body = event.get("requestBody", {})
-
-    # Parse parameters list into a dict
-    params = {}
-    for p in parameters:
-        params[p["name"]] = p["value"]
-
-    # Also check requestBody (Bedrock may send params here for POST operations)
-    if request_body:
-        content = request_body.get("content", {})
-        for _media_type, media_content in content.items():
-            props = media_content.get("properties", [])
-            for prop in props:
-                params[prop["name"]] = prop["value"]
-
-    # Route to the correct tool function
-    if api_path == "/extract-invoice-data":
-        result = extract_invoice_data(params.get("invoice_source", "demo-invoice"))
-
-    elif api_path == "/match-purchase-order":
-        result = match_purchase_order(
-            params.get("po_number", "PO-2024-00312"),
-            params.get("invoice_data", "{}"),
-        )
-
-    elif api_path == "/flag-discrepancies":
-        result = flag_discrepancies(params.get("match_result", "{}"))
-
-    elif api_path == "/route-for-approval":
-        result = route_for_approval(
-            params.get("invoice_number", ""),
-            params.get("discrepancy_data", "{}"),
-            params.get("approver_email", ""),
-        )
-
-    elif api_path == "/update-ap-ledger":
-        result = update_ap_ledger(
-            params.get("invoice_number", ""),
-            params.get("invoice_data", "{}"),
-            params.get("approval_status", "pending"),
-        )
-
-    else:
-        result = json.dumps({"error": f"Unknown api_path: {api_path}"})
-
-    return {
-        "messageVersion": "1.0",
-        "response": {
-            "actionGroup": action_group,
-            "apiPath": api_path,
-            "httpMethod": event.get("httpMethod", "POST"),
-            "httpStatusCode": 200,
-            "responseBody": {
-                "application/json": {
-                    "body": result
-                }
-            },
-        },
-    }
-
-
-# ---------------------------------------------------------------------------
-# Strands Agent definition (for local run() mode)
+# Strands Agent definition
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """You are the AP Automation Agent for Khyzr — an expert accounts payable specialist with deep knowledge of invoice processing, purchase order matching, and financial controls.
@@ -601,61 +529,42 @@ Financial controls you enforce:
 
 Always maintain GAAP compliance and internal audit readiness. Document every decision with clear rationale. Flag 🚨 on any potential fraud indicators (vendor mismatch, unusual bank account changes, round-number amounts). Your work directly impacts cash flow and vendor relationships — be accurate and timely."""
 
+model = BedrockModel(
+    model_id=os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-5"),
+    region_name=os.environ.get("AWS_REGION_NAME", os.environ.get("AWS_REGION", "us-east-1")),
+)
 
-def run(input_data: dict = None) -> dict:
-    """
-    Local / AgentCore entry point — uses the Strands Agent with all 5 tools.
-    Requires strands-agents to be installed.
-    """
-    if not STRANDS_AVAILABLE:
-        return {"error": "strands-agents not installed. Run: pip install strands-agents"}
-
-    if input_data is None:
-        input_data = {}
-
-    message = input_data.get(
-        "message",
-        "Process the demo invoice INV-2024-08821 — extract all data, match against "
-        "PO-2024-00312, flag any discrepancies, route for approval, and update the ledger.",
-    )
-
-    model = BedrockModel(
-        model_id=os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-5"),
-        region_name=os.environ.get("AWS_REGION", "us-east-1"),
-    )
-
-    agent = Agent(
-        model=model,
-        tools=[
-            extract_invoice_data,
-            match_purchase_order,
-            flag_discrepancies,
-            route_for_approval,
-            update_ap_ledger,
-        ],
-        system_prompt=SYSTEM_PROMPT,
-    )
-
-    response = agent(message)
-    return {"result": str(response)}
+agent = Agent(
+    model=model,
+    tools=[
+        extract_invoice_data,
+        match_purchase_order,
+        flag_discrepancies,
+        route_for_approval,
+        update_ap_ledger,
+    ],
+    system_prompt=SYSTEM_PROMPT,
+)
 
 
 # ---------------------------------------------------------------------------
-# CLI entry point
+# AgentCore entrypoint
 # ---------------------------------------------------------------------------
+
+@app.entrypoint
+def invoke(payload):
+    """AgentCore entrypoint — receives {"prompt": "..."} """
+    user_message = payload.get(
+        "prompt",
+        payload.get(
+            "message",
+            "Process demo invoice INV-2024-08821 — extract data, match the PO, "
+            "flag discrepancies, route for approval, and update the ledger.",
+        ),
+    )
+    result = agent(user_message)
+    return {"result": str(result)}
+
 
 if __name__ == "__main__":
-    import sys
-
-    if not sys.stdin.isatty():
-        input_data = json.loads(sys.stdin.read())
-    else:
-        input_data = {
-            "message": (
-                "Process the demo invoice INV-2024-08821 — extract all data, match "
-                "against PO-2024-00312, flag any discrepancies, route for approval, "
-                "and update the ledger."
-            )
-        }
-
-    print(json.dumps(run(input_data), indent=2))
+    app.run()

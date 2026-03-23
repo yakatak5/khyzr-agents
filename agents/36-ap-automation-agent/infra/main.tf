@@ -5,14 +5,18 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
-    archive = {
-      source  = "hashicorp/archive"
-      version = "~> 2.0"
+    awscc = {
+      source  = "hashicorp/awscc"
+      version = "~> 1.0"
     }
   }
 }
 
 provider "aws" {
+  region = var.aws_region
+}
+
+provider "awscc" {
   region = var.aws_region
 }
 
@@ -31,7 +35,7 @@ variable "environment" {
 
 variable "foundation_model" {
   default     = "anthropic.claude-sonnet-4-5-v1:0"
-  description = "Bedrock foundation model ID for the agent"
+  description = "Bedrock foundation model ID used by the agent"
 }
 
 variable "project_name" {
@@ -100,7 +104,7 @@ resource "aws_s3_bucket_policy" "ap_invoices_policy" {
         Effect    = "Deny"
         Principal = "*"
         Action    = "s3:*"
-        Resource  = [
+        Resource = [
           aws_s3_bucket.ap_invoices.arn,
           "${aws_s3_bucket.ap_invoices.arn}/*"
         ]
@@ -109,10 +113,10 @@ resource "aws_s3_bucket_policy" "ap_invoices_policy" {
         }
       },
       {
-        Sid    = "AllowAccountOnly"
-        Effect = "Deny"
+        Sid       = "AllowAccountOnly"
+        Effect    = "Deny"
         Principal = "*"
-        Action = "s3:*"
+        Action    = "s3:*"
         Resource = [
           aws_s3_bucket.ap_invoices.arn,
           "${aws_s3_bucket.ap_invoices.arn}/*"
@@ -202,42 +206,104 @@ resource "aws_dynamodb_table" "ap_ledger" {
 }
 
 # ---------------------------------------------------------------
-# Lambda — Action Group executor
+# ECR Repository — Agent container image
 # ---------------------------------------------------------------
+resource "aws_ecr_repository" "agent" {
+  name                 = "khyzr/ap-automation-agent"
+  image_tag_mutability = "MUTABLE"
+  force_delete         = true
 
-# Package the Lambda source
-data "archive_file" "lambda_zip" {
-  type        = "zip"
-  source_file = "${path.module}/../src/agent.py"
-  output_path = "${path.module}/lambda_package.zip"
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  tags = local.tags
 }
 
-# Lambda IAM Role
-resource "aws_iam_role" "lambda_role" {
-  name = "${local.agent_name}-lambda-role"
+# ---------------------------------------------------------------
+# IAM Role — AgentCore Runtime
+# ---------------------------------------------------------------
+resource "aws_iam_role" "agentcore_role" {
+  name = "${local.agent_name}-agentcore-role"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Action    = "sts:AssumeRole"
       Effect    = "Allow"
-      Principal = { Service = "lambda.amazonaws.com" }
+      Principal = { Service = "bedrock-agentcore.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+      Condition = {
+        StringEquals = {
+          "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+        }
+      }
     }]
   })
   tags = local.tags
 }
 
-resource "aws_iam_role_policy" "lambda_policy" {
-  name = "${local.agent_name}-lambda-policy"
-  role = aws_iam_role.lambda_role.id
+resource "aws_iam_role_policy" "agentcore_policy" {
+  name = "${local.agent_name}-agentcore-policy"
+  role = aws_iam_role.agentcore_role.id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Sid      = "CloudWatchLogs"
-        Effect   = "Allow"
-        Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
-        # Scoped to this function's log group only
-        Resource = "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/${local.agent_name}-tools:*"
+        Sid    = "BedrockModel"
+        Effect = "Allow"
+        Action = [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream"
+        ]
+        # Scoped to the specific foundation model — not wildcard
+        Resource = "arn:aws:bedrock:${var.aws_region}::foundation-model/${var.foundation_model}"
+      },
+      {
+        Sid    = "ECRAccess"
+        Effect = "Allow"
+        Action = [
+          "ecr:GetAuthorizationToken",
+          "ecr:BatchGetImage",
+          "ecr:GetDownloadUrlForLayer"
+        ]
+        # ecr:GetAuthorizationToken requires Resource: "*" by AWS design
+        Resource = "*"
+      },
+      {
+        Sid    = "CloudWatch"
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+          "cloudwatch:PutMetricData"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "cloudwatch:namespace" = "bedrock-agentcore"
+          }
+        }
+      },
+      {
+        Sid    = "XRay"
+        Effect = "Allow"
+        Action = [
+          "xray:PutTraceSegments",
+          "xray:PutTelemetryRecords",
+          "xray:GetSamplingRules",
+          "xray:GetSamplingTargets"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "WorkloadIdentity"
+        Effect = "Allow"
+        Action = [
+          "bedrock-agentcore:GetWorkloadAccessToken",
+          "bedrock-agentcore:GetWorkloadAccessTokenForJWT",
+          "bedrock-agentcore:GetWorkloadAccessTokenForUserId"
+        ]
+        Resource = "arn:aws:bedrock-agentcore:${var.aws_region}:${data.aws_caller_identity.current.account_id}:workload-identity-directory/default"
       },
       {
         Sid    = "DynamoDBLedger"
@@ -249,304 +315,104 @@ resource "aws_iam_role_policy" "lambda_policy" {
           "dynamodb:Scan",
           "dynamodb:UpdateItem"
         ]
-        # Scoped to this specific table only
+        # Scoped to this specific DynamoDB table only
         Resource = aws_dynamodb_table.ap_ledger.arn
       },
       {
         Sid    = "S3InvoiceBucket"
         Effect = "Allow"
-        Action = ["s3:GetObject", "s3:PutObject", "s3:ListBucket"]
-        # Scoped to this specific bucket only
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:ListBucket"
+        ]
+        # Scoped to this specific S3 bucket only
         Resource = [
           aws_s3_bucket.ap_invoices.arn,
           "${aws_s3_bucket.ap_invoices.arn}/*"
         ]
-      },
-      {
-        Sid    = "BedrockModel"
-        Effect = "Allow"
-        Action = ["bedrock:InvokeModel"]
-        # Scoped to the specific foundation model — not wildcard
-        Resource = "arn:aws:bedrock:${var.aws_region}::foundation-model/${var.foundation_model}"
-      }
-    ]
-  })
-}
-
-resource "aws_lambda_function" "ap_agent_tools" {
-  filename         = data.archive_file.lambda_zip.output_path
-  function_name    = "${local.agent_name}-tools"
-  role             = aws_iam_role.lambda_role.arn
-  handler          = "agent.lambda_handler"
-  runtime          = "python3.11"
-  timeout          = 60
-  memory_size      = 256
-  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
-
-  # No public URL — invoked only by Bedrock via IAM
-  # Reserved concurrency can be set here for production
-  reserved_concurrent_executions = -1 # unlimited within account quota
-
-  environment {
-    variables = {
-      AP_LEDGER_TABLE     = aws_dynamodb_table.ap_ledger.name
-      AP_INVOICES_BUCKET  = aws_s3_bucket.ap_invoices.bucket
-      AWS_REGION_NAME     = var.aws_region
-      ENVIRONMENT         = var.environment
-      AP_CONTROLLER_EMAIL = "ap-controller@demo.com"
-      AP_MANAGER_EMAIL    = "ap-manager@demo.com"
-      AP_CLERK_EMAIL      = "ap-clerk@demo.com"
-    }
-  }
-
-  # Encrypt environment variables
-  kms_key_arn = null # uses AWS-managed key; swap for aws_kms_key.arn for CMK
-
-  tags = local.tags
-}
-
-# CloudWatch Log Group with retention — prevents log accumulation
-resource "aws_cloudwatch_log_group" "lambda_logs" {
-  name              = "/aws/lambda/${aws_lambda_function.ap_agent_tools.function_name}"
-  retention_in_days = 30
-  tags              = local.tags
-}
-
-# Allow Bedrock agents to invoke the Lambda
-# Scoped to this account only via source_arn
-resource "aws_lambda_permission" "bedrock_invoke" {
-  statement_id  = "AllowBedrockAgentInvoke"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.ap_agent_tools.function_name
-  principal     = "bedrock.amazonaws.com"
-  # Scoped to agents in THIS account only — prevents cross-account invocation
-  source_arn    = "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:agent/*"
-}
-
-# ---------------------------------------------------------------
-# S3 Bucket — OpenAPI schema (Bedrock reads it from S3)
-# ---------------------------------------------------------------
-resource "aws_s3_bucket" "schema_bucket" {
-  bucket        = "${local.agent_name}-schema-${data.aws_caller_identity.current.account_id}"
-  force_destroy = true
-  tags          = local.tags
-}
-
-resource "aws_s3_bucket_public_access_block" "schema_bucket" {
-  bucket                  = aws_s3_bucket.schema_bucket.id
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}
-
-resource "aws_s3_bucket_server_side_encryption_configuration" "schema_bucket" {
-  bucket = aws_s3_bucket.schema_bucket.id
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
-    }
-    bucket_key_enabled = true
-  }
-}
-
-resource "aws_s3_bucket_policy" "schema_bucket_policy" {
-  bucket = aws_s3_bucket.schema_bucket.id
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid       = "DenyNonSSL"
-        Effect    = "Deny"
-        Principal = "*"
-        Action    = "s3:*"
-        Resource  = [
-          aws_s3_bucket.schema_bucket.arn,
-          "${aws_s3_bucket.schema_bucket.arn}/*"
-        ]
-        Condition = {
-          Bool = { "aws:SecureTransport" = "false" }
-        }
-      },
-      {
-        Sid    = "AllowAccountOnly"
-        Effect = "Deny"
-        Principal = "*"
-        Action = "s3:*"
-        Resource = [
-          aws_s3_bucket.schema_bucket.arn,
-          "${aws_s3_bucket.schema_bucket.arn}/*"
-        ]
-        Condition = {
-          StringNotEquals = {
-            "aws:PrincipalAccount" = data.aws_caller_identity.current.account_id
-          }
-        }
-      }
-    ]
-  })
-  depends_on = [aws_s3_bucket_public_access_block.schema_bucket]
-}
-
-resource "aws_s3_object" "openapi_schema" {
-  bucket       = aws_s3_bucket.schema_bucket.id
-  key          = "openapi.json"
-  source       = "${path.module}/../src/openapi.json"
-  content_type = "application/json"
-  etag         = filemd5("${path.module}/../src/openapi.json")
-  tags         = local.tags
-}
-
-# ---------------------------------------------------------------
-# Bedrock Agent IAM Role
-# ---------------------------------------------------------------
-resource "aws_iam_role" "bedrock_agent_role" {
-  name = "${local.agent_name}-bedrock-role"
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Action    = "sts:AssumeRole"
-      Effect    = "Allow"
-      Principal = { Service = "bedrock.amazonaws.com" }
-      Condition = {
-        StringEquals = {
-          "aws:SourceAccount" = data.aws_caller_identity.current.account_id
-        }
-      }
-    }]
-  })
-  tags = local.tags
-}
-
-resource "aws_iam_role_policy" "bedrock_agent_policy" {
-  name = "${local.agent_name}-bedrock-policy"
-  role = aws_iam_role.bedrock_agent_role.id
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "BedrockInvokeModel"
-        Effect = "Allow"
-        Action = [
-          "bedrock:InvokeModel",
-          "bedrock:InvokeModelWithResponseStream"
-        ]
-        # Scoped to the specific model — not wildcard
-        Resource = "arn:aws:bedrock:${var.aws_region}::foundation-model/${var.foundation_model}"
-      },
-      {
-        Sid      = "InvokeLambdaTools"
-        Effect   = "Allow"
-        Action   = ["lambda:InvokeFunction"]
-        # Scoped to this specific Lambda function only
-        Resource = aws_lambda_function.ap_agent_tools.arn
-      },
-      {
-        Sid      = "ReadOpenAPISchema"
-        Effect   = "Allow"
-        Action   = ["s3:GetObject"]
-        # Scoped to this specific schema bucket only
-        Resource = "${aws_s3_bucket.schema_bucket.arn}/*"
-      },
-      {
-        Sid      = "CloudWatchLogs"
-        Effect   = "Allow"
-        Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
-        # Scoped to this account and region
-        Resource = "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/bedrock/*"
       }
     ]
   })
 }
 
 # ---------------------------------------------------------------
-# Bedrock Agent
+# Docker Build & Push — ARM64 image to ECR
+# NOTE: Requires Docker with buildx installed on the machine
+#       running `terraform apply`. AgentCore requires ARM64 images.
 # ---------------------------------------------------------------
-resource "aws_bedrockagent_agent" "ap_agent" {
-  agent_name                  = local.agent_name
-  description                 = "AP Automation Agent — extracts invoices, matches POs, flags discrepancies, routes for approval, updates ledger"
-  foundation_model            = var.foundation_model
-  agent_resource_role_arn     = aws_iam_role.bedrock_agent_role.arn
-  idle_session_ttl_in_seconds = 600
+resource "null_resource" "docker_build_push" {
+  triggers = {
+    agent_py_hash     = filemd5("${path.module}/../src/agent.py")
+    dockerfile_hash   = filemd5("${path.module}/../Dockerfile")
+    requirements_hash = filemd5("${path.module}/../requirements.txt")
+  }
 
-  instruction = <<-EOT
-You are the AP Automation Agent for Khyzr — an expert accounts payable specialist.
+  provisioner "local-exec" {
+    command = <<-EOT
+      # Authenticate with ECR
+      aws ecr get-login-password --region ${var.aws_region} | \
+        docker login --username AWS --password-stdin \
+        ${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com
 
-Your mission is to automate end-to-end accounts payable workflows:
-1. Extract invoice data using extract-invoice-data
-2. Match against the purchase order using match-purchase-order
-3. Flag any discrepancies using flag-discrepancies
-4. Route for approval using route-for-approval
-5. Update the AP ledger using update-ap-ledger
+      # Build for ARM64 (required by AgentCore Runtime) and push
+      cd ${path.module}/..
+      docker buildx build --platform linux/arm64 \
+        -t ${aws_ecr_repository.agent.repository_url}:latest \
+        --push .
+    EOT
+  }
 
-Always run all 5 steps in sequence when processing an invoice.
-Flag any potential fraud indicators: vendor mismatch, unusual amounts, or missing PO references.
-Be precise with financial figures and always document your reasoning.
-Demo invoices are pre-loaded in S3:
-      Text:  s3://${aws_s3_bucket.ap_invoices.bucket}/invoices/INV-2024-08821.txt
-      Excel: s3://${aws_s3_bucket.ap_invoices.bucket}/invoices/INV-2024-08821.xlsx
-    You can process any .xlsx, .xls, .pdf, or .txt invoice uploaded to the S3 bucket.
-EOT
-
-  tags = local.tags
-
-  depends_on = [aws_iam_role_policy.bedrock_agent_policy]
+  depends_on = [aws_ecr_repository.agent]
 }
 
 # ---------------------------------------------------------------
-# Bedrock Agent Action Group
+# AgentCore Runtime
 # ---------------------------------------------------------------
-resource "aws_bedrockagent_agent_action_group" "ap_tools" {
-  agent_id          = aws_bedrockagent_agent.ap_agent.agent_id
-  agent_version     = "DRAFT"
-  action_group_name = "ap-automation-tools"
-  description       = "Tools for invoice extraction, PO matching, discrepancy detection, approval routing, and ledger updates"
+resource "awscc_bedrockagentcore_runtime" "ap_agent" {
+  agent_runtime_name = "${local.agent_name}"
+  description        = "AP Automation Agent — extracts invoices, matches POs, flags discrepancies, routes for approval, updates ledger"
+  role_arn           = aws_iam_role.agentcore_role.arn
 
-  action_group_executor {
-    lambda = aws_lambda_function.ap_agent_tools.arn
-  }
-
-  api_schema {
-    s3 {
-      s3_bucket_name = aws_s3_bucket.schema_bucket.id
-      s3_object_key  = aws_s3_object.openapi_schema.key
+  agent_runtime_artifact = {
+    container_configuration = {
+      container_uri = "${aws_ecr_repository.agent.repository_url}:latest"
     }
   }
 
-  depends_on = [
-    aws_lambda_permission.bedrock_invoke,
-    aws_s3_object.openapi_schema,
-  ]
-}
+  network_configuration = {
+    network_mode = "PUBLIC"
+  }
 
-# ---------------------------------------------------------------
-# Agent Alias — stable LIVE pointer
-# ---------------------------------------------------------------
-resource "aws_bedrockagent_agent_alias" "live" {
-  agent_id         = aws_bedrockagent_agent.ap_agent.agent_id
-  agent_alias_name = "live"
-  description      = "Live demo alias — always points to the latest prepared version"
-  tags             = local.tags
+  environment_variables = {
+    AP_LEDGER_TABLE     = aws_dynamodb_table.ap_ledger.name
+    AP_INVOICES_BUCKET  = aws_s3_bucket.ap_invoices.bucket
+    AWS_REGION_NAME     = var.aws_region
+    ENVIRONMENT         = var.environment
+    AP_CONTROLLER_EMAIL = "ap-controller@demo.com"
+    AP_MANAGER_EMAIL    = "ap-manager@demo.com"
+    AP_CLERK_EMAIL      = "ap-clerk@demo.com"
+  }
 
-  depends_on = [aws_bedrockagent_agent_action_group.ap_tools]
+  depends_on = [null_resource.docker_build_push]
 }
 
 # ---------------------------------------------------------------
 # Outputs
 # ---------------------------------------------------------------
-output "agent_id" {
-  value       = aws_bedrockagent_agent.ap_agent.agent_id
-  description = "Bedrock Agent ID — use this to invoke the agent"
+output "agent_runtime_arn" {
+  value       = awscc_bedrockagentcore_runtime.ap_agent.agent_runtime_arn
+  description = "AgentCore Runtime ARN — use this to invoke the agent"
 }
 
-output "agent_alias_id" {
-  value       = aws_bedrockagent_agent_alias.live.agent_alias_id
-  description = "Agent Alias ID — use with agent_id to invoke"
+output "agent_runtime_id" {
+  value       = awscc_bedrockagentcore_runtime.ap_agent.agent_runtime_id
+  description = "AgentCore Runtime ID"
 }
 
-output "lambda_function_name" {
-  value       = aws_lambda_function.ap_agent_tools.function_name
-  description = "Lambda function name for the action group tools"
+output "ecr_repository_url" {
+  value       = aws_ecr_repository.agent.repository_url
+  description = "ECR repository URL for the agent container image"
 }
 
 output "dynamodb_table_name" {
@@ -560,15 +426,31 @@ output "invoices_bucket" {
 }
 
 output "demo_invoke_command" {
-  description = "Ready-to-run CLI command to demo the agent"
+  description = "Ready-to-run commands to demo the agent via Python SDK or CLI"
   value       = <<-EOT
-aws bedrock-agent-runtime invoke-agent \
-  --agent-id ${aws_bedrockagent_agent.ap_agent.agent_id} \
-  --agent-alias-id ${aws_bedrockagent_agent_alias.live.agent_alias_id} \
-  --session-id demo-session-001 \
-  --region ${var.aws_region} \
-  --input-text "Process the demo invoice INV-2024-08821 — extract all data, match against the PO, flag any discrepancies, route for approval, and update the ledger." \
-  --cli-binary-format raw-in-base64-out \
-  outfile.json && cat outfile.json
+# ── Python SDK invocation ──────────────────────────────────────────────────
+python3 -c "
+import boto3, json
+client = boto3.client('bedrock-agentcore', region_name='${var.aws_region}')
+response = client.invoke_agent_runtime(
+    agentRuntimeArn='${awscc_bedrockagentcore_runtime.ap_agent.agent_runtime_arn}',
+    payload=json.dumps({
+        'prompt': 'Process the demo invoice INV-2024-08821 — extract data, match the PO, flag discrepancies, route for approval, and update the ledger.'
+    }).encode()
+)
+chunks = [c.get('chunk', b'') for c in response.get('body', [])]
+print(b''.join(chunks).decode())
+"
+
+# ── AWS CLI invocation ────────────────────────────────────────────────────
+aws bedrock-agentcore invoke-agent-runtime \
+  --agent-runtime-arn ${awscc_bedrockagentcore_runtime.ap_agent.agent_runtime_arn} \
+  --payload '{"prompt": "Process invoice INV-2024-08821 — extract data, match PO, flag discrepancies, route for approval, update ledger."}' \
+  --region ${var.aws_region}
 EOT
+}
+
+output "excel_demo_command" {
+  description = "Demo command to process the Excel invoice from S3"
+  value       = "python3 -c \"import boto3,json; c=boto3.client('bedrock-agentcore',region_name='${var.aws_region}'); r=c.invoke_agent_runtime(agentRuntimeArn='${awscc_bedrockagentcore_runtime.ap_agent.agent_runtime_arn}',payload=json.dumps({'prompt':'Process the Excel invoice at s3://${aws_s3_bucket.ap_invoices.bucket}/invoices/INV-2024-08821.xlsx — extract data, match PO, flag discrepancies, route for approval, update ledger.'}).encode()); print(b''.join([ch.get('chunk',b'') for ch in r.get('body',[])]).decode())\""
 }

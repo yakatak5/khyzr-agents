@@ -4,8 +4,8 @@ AR Collections Agent
 Monitors aging accounts receivable, scores collection risk by tier, generates
 personalized collection emails, and escalates overdue accounts to appropriate teams.
 
-Built with AWS Strands Agents + AgentCore on AWS Bedrock (Claude Sonnet).
-Deploys as an AWS Lambda function serving as a Bedrock Action Group executor.
+Built with AWS Strands Agents + Amazon Bedrock AgentCore Runtime (Claude Sonnet).
+Deploys as a containerized service on AgentCore — no Lambda required.
 """
 
 import json
@@ -14,17 +14,17 @@ import io
 import boto3
 from datetime import datetime
 
+from strands import Agent, tool
+from strands.models import BedrockModel
+from bedrock_agentcore.runtime import BedrockAgentCoreApp
+
+
 # ---------------------------------------------------------------------------
-# Optional strands imports -- only needed for local run() mode
+# AgentCore app
 # ---------------------------------------------------------------------------
-try:
-    from strands import Agent, tool
-    from strands.models import BedrockModel
-    STRANDS_AVAILABLE = True
-except ImportError:
-    STRANDS_AVAILABLE = False
-    def tool(fn):
-        return fn
+
+app = BedrockAgentCoreApp()
+
 
 # ---------------------------------------------------------------------------
 # S3 helper
@@ -593,92 +593,8 @@ def update_collection_status(account_id: str, new_status: str, notes: str = "") 
         }, indent=2)
 
 
-
 # ---------------------------------------------------------------------------
-# Lambda handler -- Bedrock Action Group executor
-# ---------------------------------------------------------------------------
-
-def lambda_handler(event, context):
-    """Handle Bedrock Agent Action Group invocations."""
-    action_group = event.get("actionGroup", "")
-    api_path     = event.get("apiPath", "")
-    parameters   = event.get("parameters", [])
-    request_body = event.get("requestBody", {})
-
-    # Parse parameters list into a dict
-    params = {}
-    for p in parameters:
-        params[p["name"]] = p["value"]
-
-    # Also check requestBody (Bedrock may send params here for POST operations)
-    if request_body:
-        content = request_body.get("content", {})
-        for _media_type, media_content in content.items():
-            props = media_content.get("properties", [])
-            for prop in props:
-                params[prop["name"]] = prop["value"]
-
-    # Route to the correct tool function
-    if api_path == "/fetch-aging-report":
-        result = fetch_aging_report(
-            as_of_date=params.get("as_of_date", ""),
-            min_days_overdue=int(params.get("min_days_overdue", 0) or 0),
-            excel_source=params.get("excel_source", ""),
-        )
-
-    elif api_path == "/score-collection-risk":
-        result = score_collection_risk(
-            account_data=params.get("account_data", "{}"),
-        )
-
-    elif api_path == "/draft-collection-email":
-        result = draft_collection_email(
-            account_id=params.get("account_id", ""),
-            company_name=params.get("company_name", ""),
-            contact_name=params.get("contact_name", ""),
-            days_overdue=int(params.get("days_overdue", 0) or 0),
-            balance=float(params.get("balance", 0) or 0),
-            risk_tier=params.get("risk_tier", "Medium"),
-        )
-
-    elif api_path == "/escalate-account":
-        result = escalate_account(
-            account_id=params.get("account_id", ""),
-            risk_tier=params.get("risk_tier", "Medium"),
-            balance=float(params.get("balance", 0) or 0),
-            days_overdue=int(params.get("days_overdue", 0) or 0),
-            company_name=params.get("company_name", ""),
-            email_draft=params.get("email_draft", "{}"),
-        )
-
-    elif api_path == "/update-collection-status":
-        result = update_collection_status(
-            account_id=params.get("account_id", ""),
-            new_status=params.get("new_status", "reminder_sent"),
-            notes=params.get("notes", ""),
-        )
-
-    else:
-        result = json.dumps({"error": f"Unknown api_path: {api_path}"})
-
-    return {
-        "messageVersion": "1.0",
-        "response": {
-            "actionGroup": action_group,
-            "apiPath":     api_path,
-            "httpMethod":  event.get("httpMethod", "POST"),
-            "httpStatusCode": 200,
-            "responseBody": {
-                "application/json": {
-                    "body": result
-                }
-            },
-        },
-    }
-
-
-# ---------------------------------------------------------------------------
-# Strands Agent definition (for local run() mode)
+# Strands Agent definition
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """You are the AR Collections Agent for Khyzr -- an expert accounts receivable specialist with deep knowledge of collections best practices, cash flow management, and customer relationship preservation.
@@ -711,61 +627,42 @@ Cash flow impact: Flag any single account where overdue balance exceeds $100K. M
 
 Your tone adapts to the situation: warm for Low-risk, professional for Medium, firm for High, and unambiguous for Critical. Every communication should motivate prompt payment while leaving the relationship intact where possible."""
 
+model = BedrockModel(
+    model_id=os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-5"),
+    region_name=os.environ.get("AWS_REGION_NAME", os.environ.get("AWS_REGION", "us-east-1")),
+)
 
-def run(input_data: dict = None) -> dict:
-    """
-    Local / AgentCore entry point -- uses the Strands Agent with all 5 tools.
-    Requires strands-agents to be installed.
-    """
-    if not STRANDS_AVAILABLE:
-        return {"error": "strands-agents not installed. Run: pip install strands-agents"}
-
-    if input_data is None:
-        input_data = {}
-
-    message = input_data.get(
-        "message",
-        "Work the collections queue -- identify all overdue accounts, score risk, "
-        "draft and send appropriate outreach, escalate high-risk accounts, and update statuses.",
-    )
-
-    model = BedrockModel(
-        model_id=os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-5"),
-        region_name=os.environ.get("AWS_REGION", "us-east-1"),
-    )
-
-    agent = Agent(
-        model=model,
-        tools=[
-            fetch_aging_report,
-            score_collection_risk,
-            draft_collection_email,
-            escalate_account,
-            update_collection_status,
-        ],
-        system_prompt=SYSTEM_PROMPT,
-    )
-
-    response = agent(message)
-    return {"result": str(response)}
+agent = Agent(
+    model=model,
+    tools=[
+        fetch_aging_report,
+        score_collection_risk,
+        draft_collection_email,
+        escalate_account,
+        update_collection_status,
+    ],
+    system_prompt=SYSTEM_PROMPT,
+)
 
 
 # ---------------------------------------------------------------------------
-# CLI entry point
+# AgentCore entrypoint
 # ---------------------------------------------------------------------------
+
+@app.entrypoint
+def invoke(payload):
+    """AgentCore entrypoint — receives {"prompt": "..."} """
+    user_message = payload.get(
+        "prompt",
+        payload.get(
+            "message",
+            "Work the full collections queue: fetch aging AR, score all accounts, "
+            "draft collection emails, escalate high-risk accounts, update statuses.",
+        ),
+    )
+    result = agent(user_message)
+    return {"result": str(result)}
+
 
 if __name__ == "__main__":
-    import sys
-
-    if not sys.stdin.isatty():
-        input_data = json.loads(sys.stdin.read())
-    else:
-        input_data = {
-            "message": (
-                "Run the daily collections workflow: fetch aging AR, score all overdue "
-                "accounts, draft and send collection emails, escalate high-risk accounts, "
-                "and update statuses."
-            )
-        }
-
-    print(json.dumps(run(input_data), indent=2))
+    app.run()

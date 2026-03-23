@@ -7,8 +7,10 @@ Covers 5 domains: Executive Strategy, Sales & Marketing, Operations, Finance & A
 ## Technology Stack
 - **Agent Framework:** AWS Strands Agents SDK (`strands-agents`)
 - **LLM:** Amazon Bedrock — Claude Sonnet (`us.anthropic.claude-sonnet-4-5-v1:0`)
-- **Infrastructure:** Terraform + AWS Bedrock AgentCore (`aws_bedrockagent_agent`)
-- **Containers:** Docker (Python 3.11-slim)
+- **Deployment Runtime:** Amazon Bedrock AgentCore Runtime (`awscc_bedrockagentcore_runtime`)
+- **Container:** Docker ARM64 → ECR (`--platform=linux/arm64`)
+- **Infrastructure:** Terraform (`aws` + `awscc` providers)
+- **Invocation:** `bedrock-agentcore:InvokeAgentRuntime`
 - **Region:** us-east-1 (default)
 
 ## Agent Domains
@@ -58,11 +60,11 @@ Covers 5 domains: Executive Strategy, Sales & Marketing, Operations, Finance & A
 | 33 | Contract Management | agents/33-contract-management-agent |
 | 34 | Support Automation | agents/34-support-automation-agent |
 | 35 | Process Intelligence | agents/35-process-intelligence-agent |
-| 36 | AP Automation ⭐ | agents/36-ap-automation-agent |
+| 36 | AP Automation ⭐⭐ | agents/36-ap-automation-agent |
 | 37 | Financial Reporting | agents/37-financial-reporting-agent |
 | 38 | Investment Analysis | agents/38-investment-analysis-agent |
 | 39 | Expense Audit ⭐ | agents/39-expense-audit-agent |
-| 40 | AR Collections ⭐ | agents/40-ar-collections-agent |
+| 40 | AR Collections ⭐⭐ | agents/40-ar-collections-agent |
 | 41 | Cash Flow | agents/41-cash-flow-agent |
 | 42 | Healthcare Scheduling | agents/42-scheduling-automation-agent |
 | 43 | Medical Coding | agents/43-medical-coding-agent |
@@ -71,19 +73,37 @@ Covers 5 domains: Executive Strategy, Sales & Marketing, Operations, Finance & A
 | 46 | Revenue Cycle | agents/46-revenue-cycle-agent |
 
 ⭐ = Full demo-ready with Lambda + DynamoDB + S3 + Action Groups
+⭐⭐ = AgentCore-upgraded: containerized Strands agent on AgentCore Runtime (no Lambda)
 
 ## Development Conventions
-- Agent directories: `agents/XX-kebab-case-name/`
+
+### AgentCore Agents (36, 40) — NEW Pattern
+- Entry point: `src/agent.py` with `BedrockAgentCoreApp` + `@app.entrypoint`
+- Tools use `@tool` decorator from strands
+- Dockerfile: `FROM --platform=linux/arm64 python:3.11-slim` (ARM64 required)
+- requirements.txt: includes `bedrock-agentcore>=0.1.0`
+- Terraform: `awscc_bedrockagentcore_runtime` + ECR repo + `null_resource` for Docker build/push
+- Invocation: `bedrock-agentcore invoke-agent-runtime --agent-runtime-arn <arn> --payload '{"prompt": "..."}'`
+
+### Legacy Agents (all others) — Lambda Pattern
 - Entry point: `src/agent.py` with `run(input_data: dict) -> dict` + `lambda_handler(event, context)`
 - Tools use `@tool` decorator from strands
-- All agents use `BedrockModel` with env-var overridable model ID
-- Terraform per-agent in `agents/XX/infra/main.tf`
-- System prompts: 200-400 words, role-specific, Khyzr-branded
-- All IAM policies use least-privilege (no wildcard Resource: "*")
+- Terraform: `aws_bedrockagent_agent` + Lambda + Action Groups + OpenAPI schema
+
+## Shared Infrastructure
+
+### Reusable Terraform Module
+`infra/modules/agentcore-runtime/` — drop-in module for deploying any Strands agent to AgentCore Runtime.
+Provides: ECR repo, IAM role (with base AgentCore permissions), `awscc_bedrockagentcore_runtime` resource.
+Pass `extra_iam_statements` for agent-specific permissions (DynamoDB, S3, etc.).
+
+### Build Script
+`scripts/build-push.sh <agent-dir> [region]` — builds ARM64 Docker image and pushes to ECR.
 
 ## Security Standards (enforced on all agents)
 - S3: public access blocked, AES256 encryption, HTTPS-only bucket policy, account-scoped deny
 - DynamoDB: server-side encryption, point-in-time recovery enabled
-- IAM: no wildcard resources, SourceAccount condition on all trust policies
-- Lambda: CloudWatch logs scoped to account/region/function
-- Bedrock IAM: SourceArn condition to prevent confused-deputy attacks
+- IAM: least-privilege; `ecr:GetAuthorizationToken` legitimately requires `Resource: "*"` (AWS design)
+- AgentCore: `bedrock-agentcore.amazonaws.com` service principal with `aws:SourceAccount` condition
+- Containers: ARM64, Python 3.11-slim base, no root process
+- Bedrock IAM: SourceAccount condition to prevent confused-deputy attacks
