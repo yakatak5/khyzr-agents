@@ -6,9 +6,9 @@ Covers 5 domains: Executive Strategy, Sales & Marketing, Operations, Finance & A
 
 ## Technology Stack
 - **Agent Framework:** AWS Strands Agents SDK (`strands-agents`)
-- **LLM:** Amazon Bedrock — Claude Sonnet (`us.anthropic.claude-sonnet-4-5`)
-- **Infrastructure:** Terraform + AWS Lambda + ECR (Bedrock AgentCore-compatible)
-- **Containers:** Docker (Python 3.11-slim), deployable to ECR + Lambda
+- **LLM:** Amazon Bedrock — Claude Sonnet (`us.anthropic.claude-sonnet-4-5-v1:0`)
+- **Infrastructure:** Terraform + AWS Bedrock AgentCore (`aws_bedrockagent_agent`)
+- **Containers:** Docker (Python 3.11-slim)
 - **Region:** us-east-1 (default)
 
 ## Agent Domains
@@ -20,30 +20,70 @@ Covers 5 domains: Executive Strategy, Sales & Marketing, Operations, Finance & A
 | 36–41 | Finance & Accounting | 6 |
 | 42–46 | Healthcare | 5 |
 
+## Agent Directory Map
+| # | Agent | Directory |
+|---|-------|-----------|
+| 01 | Market Intelligence | agents/01-market-intelligence-agent |
+| 02 | Executive Reporting | agents/02-executive-reporting-agent |
+| 03 | Strategy Document | agents/03-strategy-document-agent |
+| 04 | Deal Sourcing | agents/04-deal-sourcing-agent |
+| 05 | Scenario Modeling | agents/05-scenario-modeling-agent |
+| 06 | Briefing | agents/06-briefing-agent |
+| 07 | OKR Tracking | agents/07-okr-tracking-agent |
+| 08 | ESG Reporting | agents/08-esg-reporting-agent |
+| 09 | Risk Monitoring | agents/09-risk-monitoring-agent |
+| 10 | IR Communication | agents/10-ir-communication-agent |
+| 11 | Org Intelligence | agents/11-org-intelligence-agent |
+| 12 | Lead Scoring | agents/12-lead-scoring-agent |
+| 13 | SEO Content | agents/13-seo-content-agent |
+| 14 | Email Personalization | agents/14-email-personalization-agent |
+| 15 | Social Media | agents/15-social-media-agent |
+| 16 | CRM Enrichment | agents/16-crm-enrichment-agent |
+| 17 | Battlecard | agents/17-battlecard-agent |
+| 18 | Sales Enablement | agents/18-sales-enablement-agent |
+| 19 | Ad Optimization | agents/19-ad-optimization-agent |
+| 20 | Churn Intelligence | agents/20-churn-intelligence-agent |
+| 21 | ABM Intelligence | agents/21-abm-intelligence-agent |
+| 22 | Attribution | agents/22-attribution-agent |
+| 23 | Sentiment Monitoring | agents/23-sentiment-monitoring-agent |
+| 24 | Demand Forecasting | agents/24-demand-forecasting-agent |
+| 25 | Inventory Optimization | agents/25-inventory-optimization-agent |
+| 26 | Vendor Compliance | agents/26-vendor-compliance-agent |
+| 27 | Project Management | agents/27-project-management-agent |
+| 28 | SOP Drafting | agents/28-sop-drafting-agent |
+| 29 | Procurement | agents/29-procurement-agent |
+| 30 | Scheduling Optimization | agents/30-scheduling-optimization-agent |
+| 31 | QC Monitoring | agents/31-qc-monitoring-agent |
+| 32 | Logistics Coordination | agents/32-logistics-coordination-agent |
+| 33 | Contract Management | agents/33-contract-management-agent |
+| 34 | Support Automation | agents/34-support-automation-agent |
+| 35 | Process Intelligence | agents/35-process-intelligence-agent |
+| 36 | AP Automation ⭐ | agents/36-ap-automation-agent |
+| 37 | Financial Reporting | agents/37-financial-reporting-agent |
+| 38 | Investment Analysis | agents/38-investment-analysis-agent |
+| 39 | Expense Audit ⭐ | agents/39-expense-audit-agent |
+| 40 | AR Collections ⭐ | agents/40-ar-collections-agent |
+| 41 | Cash Flow | agents/41-cash-flow-agent |
+| 42 | Healthcare Scheduling | agents/42-scheduling-automation-agent |
+| 43 | Medical Coding | agents/43-medical-coding-agent |
+| 44 | Clinical Documentation | agents/44-clinical-documentation-agent |
+| 45 | Patient Intake | agents/45-patient-intake-agent |
+| 46 | Revenue Cycle | agents/46-revenue-cycle-agent |
+
+⭐ = Full demo-ready with Lambda + DynamoDB + S3 + Action Groups
+
 ## Development Conventions
 - Agent directories: `agents/XX-kebab-case-name/`
-- Entry point: `src/agent.py` with `run(input_data: dict) -> dict`
+- Entry point: `src/agent.py` with `run(input_data: dict) -> dict` + `lambda_handler(event, context)`
 - Tools use `@tool` decorator from strands
 - All agents use `BedrockModel` with env-var overridable model ID
 - Terraform per-agent in `agents/XX/infra/main.tf`
 - System prompts: 200-400 words, role-specific, Khyzr-branded
+- All IAM policies use least-privilege (no wildcard Resource: "*")
 
-## Environment Variables (all agents)
-- `BEDROCK_MODEL_ID` — Model override (default: `us.anthropic.claude-sonnet-4-5`)
-- `AWS_REGION` — AWS region (default: `us-east-1`)
-- Agent-specific vars documented in each `docs/README.md`
-
-## Key Commands
-```bash
-# Deploy all agents
-./scripts/deploy-all.sh
-
-# Deploy single agent
-./scripts/deploy-agent.sh agents/01-market-intelligence-agent
-
-# Test an agent locally
-./scripts/test-agent.sh agents/01-market-intelligence-agent '{"message": "Analyze Tesla Q4 2025"}'
-
-# Terraform (all agents)
-cd infra && terraform init && terraform plan && terraform apply
-```
+## Security Standards (enforced on all agents)
+- S3: public access blocked, AES256 encryption, HTTPS-only bucket policy, account-scoped deny
+- DynamoDB: server-side encryption, point-in-time recovery enabled
+- IAM: no wildcard resources, SourceAccount condition on all trust policies
+- Lambda: CloudWatch logs scoped to account/region/function
+- Bedrock IAM: SourceArn condition to prevent confused-deputy attacks
