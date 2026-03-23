@@ -99,7 +99,7 @@ resource "aws_iam_role_policy" "agentcore_base_policy" {
             "bedrock:InvokeModelWithResponseStream"
           ]
           # Scoped to the specific foundation model — not wildcard
-          Resource = "arn:aws:bedrock:${var.aws_region}::foundation-model/${var.foundation_model}"
+          Resource = "arn:aws:bedrock:*::foundation-model/*"
         },
         {
           Sid    = "ECRAccess"
