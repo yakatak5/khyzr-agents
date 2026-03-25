@@ -1,3 +1,5 @@
+![Cover: Why Most Business Transformation Strategies Fail](2026-03-25-cover.svg)
+
 **SEO Title:** Why Most Business Transformation Strategies Fail
 **Meta Description:** 70% of transformation initiatives fail — not from bad strategy, but from misaligned leadership. Here's the honest diagnosis and what to do instead.
 **Slug:** /why-business-transformation-strategies-fail
