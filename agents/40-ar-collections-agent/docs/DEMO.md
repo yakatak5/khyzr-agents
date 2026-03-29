@@ -209,7 +209,7 @@ terraform -chdir=infra output dynamodb_table_name
 ```
 
 **"AccessDeniedException" invoking Bedrock model**
-→ Ensure `anthropic.claude-sonnet-4-5-v1:0` is enabled in your account under **Bedrock → Model access**.
+→ Ensure `us.anthropic.claude-3-5-sonnet-20241022-v2:0` is enabled in your account under **Bedrock → Model access**.
 
 **"Invalid payload" error**
 → Make sure the payload is JSON-encoded bytes with a `"prompt"` key:

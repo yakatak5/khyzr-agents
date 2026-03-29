@@ -6,7 +6,7 @@ Covers 5 domains: Executive Strategy, Sales & Marketing, Operations, Finance & A
 
 ## Technology Stack
 - **Agent Framework:** AWS Strands Agents SDK (`strands-agents`)
-- **LLM:** Amazon Bedrock — Claude Sonnet (`us.anthropic.claude-sonnet-4-5-v1:0`)
+- **LLM:** Amazon Bedrock — Claude Sonnet (`us.us.anthropic.claude-3-5-sonnet-20241022-v2:0`)
 - **Deployment Runtime:** Amazon Bedrock AgentCore Runtime (`awscc_bedrockagentcore_runtime`)
 - **Code Deployment:** Code Zip (Direct Code Deployment) — S3 code artifact, no Docker required
 - **Infrastructure:** Terraform (`aws` + `awscc` + `archive` providers)

@@ -30,7 +30,7 @@ terraform --version
 
 # 3. Verify Bedrock model access is enabled
 aws bedrock list-foundation-models --region us-east-1 \
-  --query "modelSummaries[?modelId=='anthropic.claude-sonnet-4-5-v1:0'].modelId" \
+  --query "modelSummaries[?modelId=='us.anthropic.claude-3-5-sonnet-20241022-v2:0'].modelId" \
   --output text
 
 # 4. Check the agent directory exists

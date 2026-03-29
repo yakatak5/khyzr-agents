@@ -38,7 +38,7 @@ variable "environment" {
 }
 
 variable "foundation_model" {
-  default     = "anthropic.claude-sonnet-4-5-v1:0"
+  default     = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
   description = "Bedrock foundation model ID used by the agent"
 }
 
@@ -425,14 +425,19 @@ resource "aws_iam_role_policy" "agentcore_policy" {
 # No Docker, no ECR, no buildx required.
 # ---------------------------------------------------------------
 resource "awscc_bedrockagentcore_runtime" "ar_agent" {
-  agent_runtime_name = "${local.agent_name}"
+  agent_runtime_name = replace("${local.agent_name}", "-", "_")
   description        = "AR Collections Agent -- monitors aging AR, scores collection risk, drafts emails, escalates overdue accounts, updates collection status"
   role_arn           = aws_iam_role.agentcore_role.arn
 
   agent_runtime_artifact = {
-    code_artifact = {
-      s3_location = {
-        uri = "s3://${aws_s3_bucket.agent_code.bucket}/agent.zip"
+    code_configuration = {
+      runtime     = "PYTHON_3_12"
+      entry_point = ["agent.py"]
+      code = {
+        s3 = {
+          bucket = aws_s3_bucket.agent_code.bucket
+          prefix = "agent.zip"
+        }
       }
     }
   }

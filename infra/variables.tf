@@ -13,7 +13,7 @@ variable "environment" {
 variable "foundation_model" {
   description = "Bedrock foundation model ID"
   type        = string
-  default     = "anthropic.claude-sonnet-4-5-v1:0"
+  default     = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
 }
 
 variable "project_name" {
