@@ -4,14 +4,15 @@
 # =============================================================================
 #
 # Usage:
-#   ./deploy.sh [all|agent01|agent36|agent40|agent47]
+#   ./deploy.sh [all|agent01|agent36|agent40|agent47|api]
 #
 # Examples:
-#   ./deploy.sh all        # Deploy all supported agents
+#   ./deploy.sh all        # Deploy all agents + API Gateway
 #   ./deploy.sh agent01    # Deploy only Agent 01 (Market Intelligence)
 #   ./deploy.sh agent36    # Deploy only Agent 36 (AP Automation)
 #   ./deploy.sh agent40    # Deploy only Agent 40 (AR Collections)
 #   ./deploy.sh agent47    # Deploy only Agent 47 (SEO Content)
+#   ./deploy.sh api        # Deploy API Gateway + Lambda proxy only
 #
 # AWS credentials are read from environment variables:
 #   AWS_ACCESS_KEY_ID      — required
@@ -98,6 +99,64 @@ build_agent_zip() {
 
   # Cleanup
   rm -rf "$build_dir"
+}
+
+# =============================================================================
+# deploy_api
+#
+# Zips api/lambda/handler.py and runs Terraform in api/infra/.
+# =============================================================================
+deploy_api() {
+  local api_dir="$SCRIPT_DIR/api"
+  local lambda_dir="$api_dir/lambda"
+  local infra_dir="$api_dir/infra"
+  local zip_path="$lambda_dir/handler.zip"
+
+  echo ""
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "🚀 Deploying API Gateway + Lambda Proxy"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  if [ ! -f "$lambda_dir/handler.py" ]; then
+    echo "❌ ERROR: $lambda_dir/handler.py not found"
+    return 1
+  fi
+
+  # Step 1: zip the Lambda handler
+  echo ""
+  echo "📦 Step 1/3: Zipping Lambda handler..."
+  (cd "$lambda_dir" && zip -j "$zip_path" handler.py 2>&1)
+  echo "  ✅ Zip created: $zip_path ($(du -sh "$zip_path" | cut -f1))"
+
+  # Step 2: Terraform init
+  echo ""
+  echo "🔧 Step 2/3: Terraform init..."
+  cd "$infra_dir"
+  if $TERRAFORM init -upgrade 2>&1 | tail -5; then
+    echo "  ✅ Terraform init complete"
+  else
+    echo "  ❌ Terraform init failed"
+    return 1
+  fi
+
+  # Step 3: Terraform apply
+  echo ""
+  echo "⚙️  Step 3/3: Terraform apply..."
+  if $TERRAFORM apply -auto-approve -var-file="terraform.tfvars" 2>&1; then
+    echo ""
+    echo "  ✅ Terraform apply complete"
+    echo ""
+    echo "🌐 API Endpoint:"
+    $TERRAFORM output -raw api_endpoint 2>/dev/null && echo ""
+  else
+    echo ""
+    echo "  ❌ Terraform apply failed"
+    return 1
+  fi
+
+  echo ""
+  echo "🎉 API Gateway + Lambda deployed successfully!"
+  echo "   POST to: $($TERRAFORM output -raw api_endpoint 2>/dev/null)/chat"
 }
 
 # =============================================================================
@@ -195,18 +254,23 @@ case "$TARGET" in
     deploy_agent "Agent 47 - SEO Content" "47-seo-content-agent" || ERRORS=$((ERRORS + 1))
     ;;
 
+  api)
+    deploy_api || ERRORS=$((ERRORS + 1))
+    ;;
+
   all)
     deploy_agent "Agent 01 - Market Intelligence" "01-market-intelligence-agent" || ERRORS=$((ERRORS + 1))
     deploy_agent "Agent 36 - AP Automation"       "36-ap-automation-agent"       || ERRORS=$((ERRORS + 1))
     deploy_agent "Agent 40 - AR Collections"      "40-ar-collections-agent"      || ERRORS=$((ERRORS + 1))
     deploy_agent "Agent 47 - SEO Content"         "47-seo-content-agent"         || ERRORS=$((ERRORS + 1))
+    deploy_api                                                                    || ERRORS=$((ERRORS + 1))
     ;;
 
   *)
     echo ""
     echo "❌ Unknown target: $TARGET"
     echo ""
-    echo "Usage: $0 [all|agent01|agent36|agent40|agent47]"
+    echo "Usage: $0 [all|agent01|agent36|agent40|agent47|api]"
     exit 1
     ;;
 esac
