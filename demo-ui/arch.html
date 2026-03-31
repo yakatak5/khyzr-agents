@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Khyzr Agents — Architecture</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: #080a14;
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    color: #e8eaf0;
+    min-height: 100vh;
+    padding: 48px 32px;
+  }
+
+  .page { max-width: 1200px; margin: 0 auto; }
+
+  /* TITLE */
+  .title-block { text-align: center; margin-bottom: 48px; }
+  .title-block h1 {
+    font-size: 2.6rem; font-weight: 800; letter-spacing: -0.5px;
+    background: linear-gradient(135deg, #D4AF37, #f0d060);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    margin-bottom: 10px;
+  }
+  .title-block p { color: #6b7a9e; font-size: 1rem; }
+
+  /* LAYERS */
+  .layer { margin-bottom: 16px; }
+
+  .layer-box {
+    border-radius: 14px;
+    padding: 20px 24px;
+    border: 2px solid;
+    position: relative;
+  }
+
+  .layer-label {
+    font-size: 0.72rem; font-weight: 700; letter-spacing: 2px;
+    text-transform: uppercase; margin-bottom: 14px;
+  }
+
+  /* ARROW */
+  .arrow {
+    display: flex; justify-content: center; align-items: center;
+    height: 32px; color: #3d4a6a; font-size: 1.4rem;
+  }
+
+  /* CARDS ROW */
+  .cards-row {
+    display: grid;
+    gap: 14px;
+  }
+  .cards-row-2 { grid-template-columns: 1fr 1fr; }
+  .cards-row-3 { grid-template-columns: repeat(3, 1fr); }
+  .cards-row-5 { grid-template-columns: repeat(5, 1fr); }
+  .cards-row-6 { grid-template-columns: repeat(3, 1fr); }
+
+  /* WIDGET CARD */
+  .widget-card {
+    border-radius: 10px;
+    padding: 14px 16px;
+    border: 1.5px solid;
+    background: #0e1022;
+  }
+  .widget-card .wc-title { font-size: 0.95rem; font-weight: 700; margin-bottom: 4px; }
+  .widget-card .wc-sub   { font-size: 0.78rem; color: #6b7a9e; }
+
+  /* SINGLE ROW COMPONENT */
+  .component {
+    border-radius: 12px;
+    padding: 18px 24px;
+    border: 2px solid;
+    text-align: center;
+  }
+  .component h3 { font-size: 1.1rem; font-weight: 700; margin-bottom: 6px; }
+  .component p  { font-size: 0.82rem; color: #8899bb; }
+
+  /* AGENT CARD */
+  .agent-card {
+    border-radius: 12px;
+    border: 2px solid;
+    overflow: hidden;
+    background: #0d0f1c;
+  }
+  .agent-header {
+    padding: 14px 16px 12px;
+    text-align: center;
+  }
+  .agent-num  { font-size: 0.72rem; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 2px; }
+  .agent-name { font-size: 1.05rem; font-weight: 800; color: #fff; }
+  .agent-body { padding: 14px 16px; }
+  .agent-model { font-size: 0.72rem; color: #556; background: #131520; border-radius: 6px; padding: 4px 8px; margin-bottom: 10px; text-align: center; font-family: monospace; }
+  .tools-label { font-size: 0.68rem; letter-spacing: 1.5px; text-transform: uppercase; color: #4a5470; margin-bottom: 8px; font-weight: 600; }
+  .tool-pill {
+    font-size: 0.76rem; font-family: monospace;
+    border-radius: 6px; padding: 5px 10px;
+    border: 1px solid; margin-bottom: 6px;
+    background: #111320;
+  }
+
+  /* SERVICES */
+  .service-card {
+    border-radius: 10px;
+    padding: 16px;
+    border: 1.5px solid;
+    background: #0d0f1c;
+    text-align: center;
+  }
+  .service-card h4 { font-size: 0.9rem; font-weight: 700; margin-bottom: 6px; }
+  .service-card p  { font-size: 0.78rem; color: #8899bb; line-height: 1.5; }
+
+  /* COLORS */
+  .blue   { border-color: #3c82e6; }
+  .blue-t { color: #3c82e6; }
+  .blue-bg { background: rgba(60,130,230,0.08); }
+
+  .green   { border-color: #2dc86a; }
+  .green-t { color: #2dc86a; }
+  .green-bg { background: rgba(45,200,106,0.07); }
+
+  .orange   { border-color: #e18c2d; }
+  .orange-t { color: #e18c2d; }
+  .orange-bg { background: rgba(225,140,45,0.07); }
+
+  .purple   { border-color: #a064f0; }
+  .purple-t { color: #a064f0; }
+  .purple-bg { background: rgba(160,100,240,0.07); }
+
+  .teal   { border-color: #2dc8c8; }
+  .teal-t { color: #2dc8c8; }
+  .teal-bg { background: rgba(45,200,200,0.07); }
+
+  .red   { border-color: #e14f4f; }
+  .red-t { color: #e14f4f; }
+  .red-bg { background: rgba(225,79,79,0.07); }
+
+  .gray   { border-color: #2a3050; }
+  .gray-t { color: #8899bb; }
+
+  /* FOOTER */
+  .footer { text-align: center; margin-top: 40px; color: #3d4a6a; font-size: 0.8rem; }
+  .badge {
+    display: inline-block; font-size: 0.68rem; font-weight: 700;
+    letter-spacing: 1px; text-transform: uppercase;
+    border-radius: 20px; padding: 3px 10px; margin-right: 6px;
+    border: 1px solid;
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- TITLE -->
+  <div class="title-block">
+    <h1>Khyzr AI Agents</h1>
+    <p>Cloud-native AI agents built on AWS Bedrock AgentCore &nbsp;·&nbsp; Production-ready &nbsp;·&nbsp; No infrastructure to manage</p>
+  </div>
+
+  <!-- LAYER 1: Frontend -->
+  <div class="layer">
+    <div class="layer-box blue" style="background:#0b0e1e;">
+      <div class="layer-label blue-t">01 &nbsp;/&nbsp; Frontend</div>
+      <div class="cards-row cards-row-6">
+        <div class="widget-card blue">
+          <div class="wc-title blue-t">💬 Market Intelligence</div>
+          <div class="wc-sub">Natural language query</div>
+        </div>
+        <div class="widget-card teal">
+          <div class="wc-title teal-t">📦 Inventory Optimization</div>
+          <div class="wc-sub">Excel upload → stock alerts</div>
+        </div>
+        <div class="widget-card green">
+          <div class="wc-title green-t">💳 AP Automation</div>
+          <div class="wc-sub">Excel upload → invoice processing</div>
+        </div>
+        <div class="widget-card orange">
+          <div class="wc-title orange-t">💰 AR Collections</div>
+          <div class="wc-sub">Excel upload → aging analysis</div>
+        </div>
+        <div class="widget-card red">
+          <div class="wc-title red-t">🎮 Raffle Agent</div>
+          <div class="wc-sub">Excel upload → pick winner 🎉</div>
+        </div>
+        <div class="widget-card" style="border-color:#c0392b; background:#0e1022;">
+          <div class="wc-title" style="color:#c0392b;">🔒 Terraform Hardening</div>
+          <div class="wc-sub">.tf upload → hardened code + download</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow">↓</div>
+
+  <!-- LAYER 2: API -->
+  <div class="layer">
+    <div class="cards-row cards-row-2">
+      <div class="component green" style="background:#081208;">
+        <h3 class="green-t">AWS API Gateway</h3>
+        <p>REST endpoint &nbsp;·&nbsp; CORS enabled &nbsp;·&nbsp; Routes chat requests</p>
+      </div>
+      <div class="component teal" style="background:#081212;">
+        <h3 class="teal-t">Replit Backend</h3>
+        <p>Server-side S3 upload &nbsp;·&nbsp; Scoped IAM credentials &nbsp;·&nbsp; No AWS keys in browser</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow">↓</div>
+
+  <!-- LAYER 3: Lambda -->
+  <div class="layer">
+    <div class="component orange" style="background:#120a04; max-width:640px; margin:0 auto;">
+      <h3 class="orange-t">⚡ AWS Lambda Proxy</h3>
+      <p>Routes <code style="color:#e18c2d;background:#1a1008;padding:1px 6px;border-radius:4px;">agent_id</code> to the correct AgentCore runtime &nbsp;·&nbsp; Python 3.12 &nbsp;·&nbsp; 60s timeout</p>
+    </div>
+  </div>
+
+  <div class="arrow">↓</div>
+
+  <!-- LAYER 4: AgentCore -->
+  <div class="layer">
+    <div class="layer-box purple" style="background:#090b18;">
+      <div class="layer-label purple-t">04 &nbsp;/&nbsp; Amazon Bedrock AgentCore Runtime</div>
+      <div class="cards-row cards-row-6">
+
+        <!-- Agent 01 -->
+        <div class="agent-card blue">
+          <div class="agent-header blue-bg">
+            <div class="agent-num blue-t">Agent 01</div>
+            <div class="agent-name">Market Intelligence</div>
+          </div>
+          <div class="agent-body">
+            <div class="agent-model">claude-3-haiku</div>
+            <div class="tools-label">Strands Tools</div>
+            <div class="tool-pill blue" style="color:#7ab8ff;">search_news()</div>
+            <div class="tool-pill blue" style="color:#7ab8ff;">search_sec_filings()</div>
+            <div class="tool-pill blue" style="color:#7ab8ff;">store_report()</div>
+            <div class="tool-pill blue" style="color:#7ab8ff;">send_email()</div>
+          </div>
+        </div>
+
+        <!-- Agent 25 -->
+        <div class="agent-card teal">
+          <div class="agent-header teal-bg">
+            <div class="agent-num teal-t">Agent 25</div>
+            <div class="agent-name">Inventory Optimization</div>
+          </div>
+          <div class="agent-body">
+            <div class="agent-model">claude-3-haiku</div>
+            <div class="tools-label">Strands Tools</div>
+            <div class="tool-pill teal" style="color:#2dc8c8;">load_inventory_from_s3()</div>
+            <div class="tool-pill teal" style="color:#2dc8c8;">generate_reorder_alerts()</div>
+            <div class="tool-pill teal" style="color:#2dc8c8;">calculate_safety_stock()</div>
+            <div class="tool-pill teal" style="color:#2dc8c8;">store_report()</div>
+          </div>
+        </div>
+
+        <!-- Agent 36 -->
+        <div class="agent-card green">
+          <div class="agent-header green-bg">
+            <div class="agent-num green-t">Agent 36</div>
+            <div class="agent-name">AP Automation</div>
+          </div>
+          <div class="agent-body">
+            <div class="agent-model">claude-3-haiku</div>
+            <div class="tools-label">Strands Tools</div>
+            <div class="tool-pill green" style="color:#2dc86a;">read_invoice_from_s3()</div>
+            <div class="tool-pill green" style="color:#2dc86a;">match_purchase_order()</div>
+            <div class="tool-pill green" style="color:#2dc86a;">approve_invoice()</div>
+            <div class="tool-pill green" style="color:#2dc86a;">update_ap_ledger()</div>
+          </div>
+        </div>
+
+        <!-- Agent 40 -->
+        <div class="agent-card orange">
+          <div class="agent-header orange-bg">
+            <div class="agent-num orange-t">Agent 40</div>
+            <div class="agent-name">AR Collections</div>
+          </div>
+          <div class="agent-body">
+            <div class="agent-model">claude-3-haiku</div>
+            <div class="tools-label">Strands Tools</div>
+            <div class="tool-pill orange" style="color:#e18c2d;">fetch_aging_report()</div>
+            <div class="tool-pill orange" style="color:#e18c2d;">score_collection_risk()</div>
+            <div class="tool-pill orange" style="color:#e18c2d;">draft_collection_email()</div>
+            <div class="tool-pill orange" style="color:#e18c2d;">update_status()</div>
+          </div>
+        </div>
+
+        <!-- Agent 48 -->
+        <div class="agent-card red">
+          <div class="agent-header red-bg">
+            <div class="agent-num red-t">Agent 48</div>
+            <div class="agent-name">Raffle Agent 🎮</div>
+          </div>
+          <div class="agent-body">
+            <div class="agent-model">claude-3-haiku</div>
+            <div class="tools-label">Strands Tools</div>
+            <div class="tool-pill red" style="color:#e14f4f;">load_entries_from_s3()</div>
+            <div class="tool-pill red" style="color:#e14f4f;">pick_winners()</div>
+            <div class="tool-pill red" style="color:#e14f4f;">announce_winner() 🎉</div>
+          </div>
+        </div>
+
+        <!-- Agent 49 -->
+        <div class="agent-card" style="border-color:#c0392b;">
+          <div class="agent-header" style="background:rgba(192,57,43,0.1);">
+            <div class="agent-num" style="color:#c0392b;">Agent 49</div>
+            <div class="agent-name">Terraform Hardening</div>
+          </div>
+          <div class="agent-body">
+            <div class="agent-model">claude-3-haiku</div>
+            <div class="tools-label">Strands Tools</div>
+            <div class="tool-pill" style="border-color:#7a1c11;color:#e05a4a;">load_terraform_from_s3()</div>
+            <div class="tool-pill" style="border-color:#7a1c11;color:#e05a4a;">scan_terraform_issues()</div>
+            <div class="tool-pill" style="border-color:#7a1c11;color:#e05a4a;">store_hardened_output()</div>
+            <div class="tool-pill" style="border-color:#7a1c11;color:#e05a4a;">presigned_download_url()</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow">↓</div>
+
+  <!-- LAYER 5: AWS Services -->
+  <div class="layer">
+    <div class="layer-box gray" style="background:#08090f;">
+      <div class="layer-label gray-t">05 &nbsp;/&nbsp; AWS Services</div>
+      <div class="cards-row cards-row-5">
+        <div class="service-card purple">
+          <h4 class="purple-t">Amazon Bedrock</h4>
+          <p>Foundation Models<br>Anthropic Claude</p>
+        </div>
+        <div class="service-card orange">
+          <h4 class="orange-t">Amazon S3</h4>
+          <p>Code bundles<br>Data files & reports</p>
+        </div>
+        <div class="service-card green">
+          <h4 class="green-t">Amazon DynamoDB</h4>
+          <p>AP ledger<br>AR collections status</p>
+        </div>
+        <div class="service-card blue">
+          <h4 class="blue-t">AWS IAM</h4>
+          <p>AgentCore roles<br>Scoped service accounts</p>
+        </div>
+        <div class="service-card teal">
+          <h4 class="teal-t">CloudWatch</h4>
+          <p>Runtime logs<br>Agent telemetry</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- FOOTER -->
+  <div class="footer">
+    <span class="badge blue" style="color:#3c82e6;border-color:#3c82e6;">AWS Strands SDK</span>
+    <span class="badge purple" style="color:#a064f0;border-color:#a064f0;">Bedrock AgentCore</span>
+    <span class="badge green" style="color:#2dc86a;border-color:#2dc86a;">Python 3.12</span>
+    <span class="badge orange" style="color:#e18c2d;border-color:#e18c2d;">No Docker Required</span>
+    <br><br>
+    Built by Khyzr &nbsp;·&nbsp; Powered by AWS
+  </div>
+
+</div>
+</body>
+</html>
