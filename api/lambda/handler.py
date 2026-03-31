@@ -1,129 +1,71 @@
 """
-handler.py — Khyzr Agents API Gateway + Lambda Proxy
-
-Routes POST /chat requests to the correct AgentCore runtime based on agent_id.
-No AWS credentials needed by the caller — the Lambda's IAM role handles auth.
+Khyzr Agents API — Lambda proxy
+Routes POST /chat requests to the correct AgentCore runtime.
 """
-
-import json
-import logging
-import uuid
 import boto3
+import json
+import os
+import uuid
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+REGION = os.environ.get('AWS_REGION_NAME', 'us-east-1')
 
-# ── Agent routing map ─────────────────────────────────────────────────────────
 AGENT_RUNTIMES = {
-    "market-intelligence": "khyzr_market_intelligence_demo-IXK91q23u1",
-    "ap-automation":       "khyzr_ap_automation_demo-yXLiHZ39Ob",
-    "ar-collections":      "khyzr_ar_collections_demo-HZchkDGBs5",
+    'market-intelligence': os.environ.get('RUNTIME_MARKET_INTELLIGENCE', 'khyzr_market_intelligence_demo-9ilDrbFvhG'),
+    'ap-automation':       os.environ.get('RUNTIME_AP_AUTOMATION',       'khyzr_ap_automation_demo-HR6p34ANEs'),
+    'ar-collections':      os.environ.get('RUNTIME_AR_COLLECTIONS',      'khyzr_ar_collections_demo-FaFTsVGr0Z'),
+    'raffle':              os.environ.get('RUNTIME_RAFFLE',               'khyzr_raffle_demo-8uf6GjHz29'),
 }
 
-# ── CORS headers returned with every response ─────────────────────────────────
 CORS_HEADERS = {
-    "Access-Control-Allow-Origin":  "*",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    "Content-Type":                 "application/json",
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Content-Type,Authorization',
+    'Access-Control-Allow-Methods': 'POST,OPTIONS',
+    'Content-Type': 'application/json',
 }
 
-# ── Cold-start: resolve AWS account id once ───────────────────────────────────
-try:
-    _ACCOUNT_ID = boto3.client("sts").get_caller_identity()["Account"]
-    logger.info("Resolved account id: %s", _ACCOUNT_ID)
-except Exception as exc:  # noqa: BLE001
-    _ACCOUNT_ID = None
-    logger.warning("Could not resolve account id at cold start: %s", exc)
-
-
-def _runtime_arn(runtime_name: str) -> str:
-    """Build the full ARN for an AgentCore runtime."""
-    return f"arn:aws:bedrock-agentcore:us-east-1:{_ACCOUNT_ID}:runtime/{runtime_name}"
-
-
-def _ok(body: dict, status: int = 200) -> dict:
-    return {
-        "statusCode": status,
-        "headers": CORS_HEADERS,
-        "body": json.dumps(body),
-    }
-
-
-def _err(message: str, status: int = 400) -> dict:
-    return {
-        "statusCode": status,
-        "headers": CORS_HEADERS,
-        "body": json.dumps({"error": message}),
-    }
-
-
-def lambda_handler(event, context):  # noqa: ARG001
-    logger.info("Event: %s", json.dumps(event))
-
-    # ── Handle CORS preflight ─────────────────────────────────────────────────
-    if event.get("requestContext", {}).get("http", {}).get("method") == "OPTIONS":
-        return _ok({}, 200)
-
-    # ── Parse request body ────────────────────────────────────────────────────
-    try:
-        body = json.loads(event.get("body") or "{}")
-    except json.JSONDecodeError:
-        return _err("Invalid JSON in request body")
-
-    agent_id  = body.get("agent_id", "").strip()
-    message   = body.get("message",  "").strip()
-    session_id = body.get("session_id") or str(uuid.uuid4())
-
-    # ── Validate inputs ───────────────────────────────────────────────────────
-    if not agent_id:
-        return _err("Missing required field: agent_id")
-    if not message:
-        return _err("Missing required field: message")
-    if agent_id not in AGENT_RUNTIMES:
-        valid = ", ".join(sorted(AGENT_RUNTIMES))
-        return _err(f"Unknown agent_id '{agent_id}'. Valid values: {valid}")
-    if not _ACCOUNT_ID:
-        return _err("Lambda could not resolve AWS account id — check IAM role", 500)
-
-    # ── Invoke AgentCore runtime ──────────────────────────────────────────────
-    runtime_name = AGENT_RUNTIMES[agent_id]
-    runtime_arn  = _runtime_arn(runtime_name)
-    logger.info("Invoking runtime %s for agent %s (session %s)", runtime_arn, agent_id, session_id)
+def lambda_handler(event, context):
+    if event.get('requestContext', {}).get('http', {}).get('method') == 'OPTIONS':
+        return {'statusCode': 200, 'headers': CORS_HEADERS, 'body': ''}
 
     try:
-        client = boto3.client("bedrock-agentcore", region_name="us-east-1")
-        resp = client.invoke_agent_runtime(
-            agentRuntimeArn=runtime_arn,
-            payload=json.dumps({"prompt": message}),
-        )
-        raw_body = resp["response"].read()
-        result   = json.loads(raw_body)
-        logger.info("AgentCore response keys: %s", list(result.keys()) if isinstance(result, dict) else type(result))
+        body = json.loads(event.get('body', '{}'))
+        agent_id   = body.get('agent_id', '')
+        message    = body.get('message', '')
+        session_id = body.get('session_id', str(uuid.uuid4()))
 
-        # Extract the agent's text reply — handle common response shapes
-        if isinstance(result, dict):
-            agent_reply = (
-                result.get("output")
-                or result.get("response")
-                or result.get("text")
-                or result.get("content")
-                or result.get("message")
-                or json.dumps(result)
-            )
+        if not agent_id or agent_id not in AGENT_RUNTIMES:
+            return {
+                'statusCode': 400,
+                'headers': CORS_HEADERS,
+                'body': json.dumps({'error': f"Unknown agent_id. Valid: {list(AGENT_RUNTIMES.keys())}"})
+            }
+
+        if not message:
+            return {'statusCode': 400, 'headers': CORS_HEADERS, 'body': json.dumps({'error': 'message is required'})}
+
+        runtime_id = AGENT_RUNTIMES[agent_id]
+        account_id = boto3.client('sts').get_caller_identity()['Account']
+        runtime_arn = f'arn:aws:bedrock-agentcore:{REGION}:{account_id}:runtime/{runtime_id}'
+
+        # For raffle agent, pass bucket/key from message if provided
+        if agent_id == 'raffle':
+            payload = json.loads(message) if message.startswith('{') else {'prompt': message}
         else:
-            agent_reply = str(result)
+            payload = {'prompt': message}
 
-    except client.exceptions.ResourceNotFoundException:
-        return _err(f"AgentCore runtime '{runtime_name}' not found. Is it deployed?", 404)
-    except client.exceptions.AccessDeniedException:
-        return _err("Lambda IAM role lacks permission to invoke this runtime", 403)
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("AgentCore invocation failed")
-        return _err(f"AgentCore error: {exc}", 502)
+        client = boto3.client('bedrock-agentcore', region_name=REGION)
+        resp = client.invoke_agent_runtime(agentRuntimeArn=runtime_arn, payload=json.dumps(payload))
+        result = json.loads(resp['response'].read())
+        response_text = result.get('result') or result.get('output') or result.get('response') or str(result)
 
-    return _ok({
-        "response":   agent_reply,
-        "agent_id":   agent_id,
-        "session_id": session_id,
-    })
+        return {
+            'statusCode': 200,
+            'headers': CORS_HEADERS,
+            'body': json.dumps({'response': response_text, 'agent_id': agent_id, 'session_id': session_id})
+        }
+    except Exception as e:
+        return {
+            'statusCode': 500,
+            'headers': CORS_HEADERS,
+            'body': json.dumps({'error': str(e)})
+        }
