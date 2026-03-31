@@ -154,26 +154,52 @@ def scan_terraform_issues(terraform_json: str) -> str:
 
 
 @tool
-def store_hardened_output(content: str, bucket: str = "", key: str = "hardened/terraform-hardened.tf") -> str:
+def store_hardened_output(hardened_code: str, explanation: str, bucket: str = "", key: str = "hardened/main-hardened.tf") -> str:
     """
-    Store the hardened Terraform output to S3.
+    Store ONLY the hardened Terraform code as a downloadable .tf file in S3.
+    Stores a clean .tf file (no markdown, no explanation — pure HCL).
 
     Args:
-        content: The hardened Terraform code + explanation
+        hardened_code: The hardened Terraform HCL code only (no markdown fences)
+        explanation: The human-readable explanation of changes (NOT stored in the .tf file)
         bucket: S3 bucket (defaults to TERRAFORM_BUCKET env var)
-        key: S3 key for the output file
+        key: S3 key for the output .tf file
 
     Returns:
-        JSON with storage result
+        JSON with presigned download URL valid for 1 hour
     """
     bucket = bucket or os.environ.get("TERRAFORM_BUCKET", "")
     if not bucket:
         return json.dumps({"status": "skipped", "note": "TERRAFORM_BUCKET not set"})
     try:
         s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION_NAME", "us-east-1"))
-        s3.put_object(Bucket=bucket, Key=key, Body=content.encode(), ContentType="text/plain")
-        return json.dumps({"status": "stored", "bucket": bucket, "key": key,
-                           "download_note": "Hardened code saved to S3"})
+
+        # Strip markdown fences if present
+        code = hardened_code.strip()
+        for fence in ["```hcl", "```terraform", "```"]:
+            if code.startswith(fence):
+                code = code[len(fence):]
+                break
+        if code.endswith("```"):
+            code = code[:-3]
+        code = code.strip()
+
+        s3.put_object(Bucket=bucket, Key=key, Body=code.encode(), ContentType="text/plain",
+                      ContentDisposition=f'attachment; filename="main-hardened.tf"')
+
+        # Generate presigned URL valid 1 hour
+        url = s3.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': bucket, 'Key': key},
+            ExpiresIn=3600
+        )
+        return json.dumps({
+            "status": "stored",
+            "bucket": bucket,
+            "key": key,
+            "download_url": url,
+            "expires_in": "1 hour",
+        })
     except Exception as e:
         return json.dumps({"status": "no_results", "note": "Could not store output."})
 
@@ -196,33 +222,41 @@ def _get_agent() -> Agent:
             tools=[load_terraform_from_s3, scan_terraform_issues, store_hardened_output],
             system_prompt="""You are the Terraform Hardening Agent — a cloud security expert specializing in infrastructure-as-code security.
 
-Your job: take Terraform code and return a fully hardened version with every security issue fixed.
+Your job: take Terraform code, fix every security issue, save the hardened file, and explain your changes clearly.
 
 Workflow:
 1. Load the Terraform files using load_terraform_from_s3
 2. Scan for issues using scan_terraform_issues
-3. Rewrite the Terraform code with ALL security fixes applied
-4. Store the hardened output using store_hardened_output
-5. Return a clear report with:
-   - Executive summary (X critical, Y high, Z medium issues found and fixed)
-   - For each fix: what was wrong, what changed, and why it matters
-   - The complete hardened Terraform code block(s), ready to use
+3. Rewrite the complete Terraform code with ALL security fixes applied
+4. Call store_hardened_output with TWO separate arguments:
+   - hardened_code: ONLY the raw HCL code (no markdown fences, no explanation)
+   - explanation: empty string (explanation goes in your chat response)
+5. Return your response in this EXACT format:
 
-Security standards you apply:
+---
+DOWNLOAD_URL: <the download_url from store_hardened_output result>
+---
+
+## 🔒 Terraform Hardening Report
+
+**X critical · Y high · Z medium issues found and fixed**
+
+### Changes Made
+
+For each fix, explain:
+- ❌ **What was wrong**: brief description
+- ✅ **What was fixed**: what HCL was added/changed
+- 🛡️ **Why it matters**: plain English security impact
+
+Keep explanations concise — one paragraph per fix max.
+End with a one-line summary of the overall security posture improvement.
+
+Security standards applied:
 - CIS AWS Foundations Benchmark
 - AWS Well-Architected Framework (Security Pillar)
-- Least-privilege IAM
-- Encryption at rest and in transit
-- No public exposure without explicit justification
-- IMDSv2 enforcement on EC2
-- Versioning and logging on S3
-- Deletion protection on databases
-- Key rotation on KMS
+- Least-privilege IAM, encryption everywhere, no public exposure, IMDSv2, key rotation
 
-Format your response in clean markdown. Show the hardened code in ```hcl code blocks.
-Be thorough — a missed security issue in production can mean a breach.
-
-If tool errors occur, silently work with what you have. Never mention tool failures to the user.
+If tool errors occur, silently work with what you have. Never mention tool failures.
 """,
         )
     return _agent
