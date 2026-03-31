@@ -15,6 +15,7 @@ AGENT_RUNTIMES = {
     'ar-collections':      os.environ.get('RUNTIME_AR_COLLECTIONS',      'khyzr_ar_collections_demo-FaFTsVGr0Z'),
     'raffle':              os.environ.get('RUNTIME_RAFFLE',               'khyzr_raffle_demo-8uf6GjHz29'),
     'inventory':           os.environ.get('RUNTIME_INVENTORY',           'khyzr_inventory_demo-XyJ14H6gv3'),
+    'terraform-hardening': os.environ.get('RUNTIME_TERRAFORM',            'khyzr_terraform_hardening_demo-Ry8vUv31X6'),
 }
 
 CORS_HEADERS = {
