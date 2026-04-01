@@ -57,6 +57,7 @@
   .cards-row-3 { grid-template-columns: repeat(3, 1fr); }
   .cards-row-5 { grid-template-columns: repeat(5, 1fr); }
   .cards-row-6 { grid-template-columns: repeat(3, 1fr); }
+  .cards-row-7 { grid-template-columns: repeat(4, 1fr); }
 
   /* WIDGET CARD */
   .widget-card {
@@ -163,7 +164,7 @@
   <div class="layer">
     <div class="layer-box blue" style="background:#0b0e1e;">
       <div class="layer-label blue-t">01 &nbsp;/&nbsp; Frontend</div>
-      <div class="cards-row cards-row-6">
+      <div class="cards-row cards-row-7">
         <div class="widget-card blue">
           <div class="wc-title blue-t">💬 Market Intelligence</div>
           <div class="wc-sub">Natural language query</div>
@@ -187,6 +188,10 @@
         <div class="widget-card" style="border-color:#c0392b; background:#0e1022;">
           <div class="wc-title" style="color:#c0392b;">🔒 Terraform Hardening</div>
           <div class="wc-sub">.tf upload → hardened code + download</div>
+        </div>
+        <div class="widget-card" style="border-color:#8b0000; background:#0e1022;">
+          <div class="wc-title" style="color:#c0392b;">🔐 Threat Modeling</div>
+          <div class="wc-sub">PNG/JPG upload → STRIDE report</div>
         </div>
       </div>
     </div>
@@ -224,7 +229,7 @@
   <div class="layer">
     <div class="layer-box purple" style="background:#090b18;">
       <div class="layer-label purple-t">04 &nbsp;/&nbsp; Amazon Bedrock AgentCore Runtime</div>
-      <div class="cards-row cards-row-6">
+      <div class="cards-row cards-row-7">
 
         <!-- Agent 01 -->
         <div class="agent-card blue">
@@ -321,6 +326,21 @@
           </div>
         </div>
 
+        <!-- Agent 50 -->
+        <div class="agent-card" style="border-color:#8b0000;">
+          <div class="agent-header" style="background:rgba(139,0,0,0.12);">
+            <div class="agent-num" style="color:#c0392b;">Agent 50</div>
+            <div class="agent-name">Threat Modeling</div>
+          </div>
+          <div class="agent-body">
+            <div class="agent-model">haiku + sonnet vision</div>
+            <div class="tools-label">Strands Tools</div>
+            <div class="tool-pill" style="border-color:#5a0000;color:#e05a4a;">analyze_architecture_image()</div>
+            <div class="tool-pill" style="border-color:#5a0000;color:#e05a4a;">run_stride_analysis()</div>
+            <div class="tool-pill" style="border-color:#5a0000;color:#e05a4a;">store_threat_model_report()</div>
+          </div>
+        </div>
+
       </div>
     </div>
   </div>
@@ -338,7 +358,7 @@
         </div>
         <div class="service-card orange">
           <h4 class="orange-t">Amazon S3</h4>
-          <p>Code bundles<br>Data files & reports</p>
+          <p>Code bundles<br>Data files &amp; reports</p>
         </div>
         <div class="service-card green">
           <h4 class="green-t">Amazon DynamoDB</h4>
