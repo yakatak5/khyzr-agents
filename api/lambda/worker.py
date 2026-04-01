@@ -14,6 +14,7 @@ JOBS_TABLE = os.environ.get('JOBS_TABLE', 'khyzr-agent-jobs')
 
 AGENT_RUNTIMES = {
     'terraform-hardening': os.environ.get('RUNTIME_TERRAFORM', 'khyzr_terraform_hardening_demo-Ry8vUv31X6'),
+    'threat-modeling':     os.environ.get('RUNTIME_THREAT_MODEL',   'khyzr_threat_model_demo-dASoTjBH8K'),
     # Add more async agents here as needed
 }
 
@@ -58,7 +59,7 @@ def lambda_handler(event, context):
             'ttl':      int(time.time()) + 86400,
         }
 
-        if agent_id == 'terraform-hardening':
+        if agent_id in ('terraform-hardening', 'threat-modeling'):
             download_url, response_text = extract_download_url(response_text)
             item['response'] = response_text
             if download_url:

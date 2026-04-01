@@ -29,9 +29,10 @@ AGENT_RUNTIMES = {
     'raffle':              os.environ.get('RUNTIME_RAFFLE',               'khyzr_raffle_demo-8uf6GjHz29'),
     'inventory':           os.environ.get('RUNTIME_INVENTORY',           'khyzr_inventory_demo-XyJ14H6gv3'),
     'terraform-hardening': os.environ.get('RUNTIME_TERRAFORM',           'khyzr_terraform_hardening_demo-Ry8vUv31X6'),
+    'threat-modeling':     os.environ.get('RUNTIME_THREAT_MODEL',          'khyzr_threat_model_demo-dASoTjBH8K'),
 }
 
-ASYNC_AGENTS = {'terraform-hardening'}
+ASYNC_AGENTS = {'terraform-hardening', 'threat-modeling'}
 
 CORS_HEADERS = {
     'Access-Control-Allow-Origin': '*',
