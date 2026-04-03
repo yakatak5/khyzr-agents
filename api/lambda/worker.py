@@ -1,6 +1,6 @@
 """
 Khyzr Agents Worker Lambda
-Invoked async by the main handler for long-running agents (terraform-hardening).
+Invoked async by the main handler for ALL agents.
 Runs the AgentCore call, writes result back to DynamoDB.
 """
 import boto3
@@ -13,9 +13,25 @@ REGION     = os.environ.get('AWS_REGION_NAME', 'us-east-1')
 JOBS_TABLE = os.environ.get('JOBS_TABLE', 'khyzr-agent-jobs')
 
 AGENT_RUNTIMES = {
-    'terraform-hardening': os.environ.get('RUNTIME_TERRAFORM', 'khyzr_terraform_hardening_demo-Ry8vUv31X6'),
-    'threat-modeling':     os.environ.get('RUNTIME_THREAT_MODEL',   'khyzr_threat_model_demo-dASoTjBH8K'),
-    # Add more async agents here as needed
+    'market-intelligence': os.environ.get('RUNTIME_MARKET_INTELLIGENCE', 'khyzr_market_intelligence_demo-9ilDrbFvhG'),
+    'ap-automation':       os.environ.get('RUNTIME_AP_AUTOMATION',       'khyzr_ap_automation_demo-HR6p34ANEs'),
+    'ar-collections':      os.environ.get('RUNTIME_AR_COLLECTIONS',      'khyzr_ar_collections_demo-FaFTsVGr0Z'),
+    'raffle':              os.environ.get('RUNTIME_RAFFLE',               'khyzr_raffle_demo-8uf6GjHz29'),
+    'inventory':           os.environ.get('RUNTIME_INVENTORY',           'khyzr_inventory_demo-XyJ14H6gv3'),
+    'terraform-hardening': os.environ.get('RUNTIME_TERRAFORM',           'khyzr_terraform_hardening_demo-Ry8vUv31X6'),
+    'threat-modeling':     os.environ.get('RUNTIME_THREAT_MODEL',        'khyzr_threat_model_demo-dASoTjBH8K'),
+}
+
+# Agents that pass message as raw JSON payload (file-based agents)
+JSON_PAYLOAD_AGENTS = {
+    'ap-automation', 'ar-collections', 'raffle',
+    'inventory', 'terraform-hardening', 'threat-modeling'
+}
+
+# Agents that produce a downloadable file
+DOWNLOAD_AGENTS = {
+    'terraform-hardening': 'main-hardened.tf',
+    'threat-modeling':     'threat-model-report.md',
 }
 
 def extract_download_url(text):
@@ -44,7 +60,11 @@ def lambda_handler(event, context):
         account_id  = boto3.client('sts').get_caller_identity()['Account']
         runtime_arn = f'arn:aws:bedrock-agentcore:{REGION}:{account_id}:runtime/{runtime_id}'
 
-        payload = json.loads(message) if message.strip().startswith('{') else {'prompt': message}
+        # Build payload
+        if agent_id in JSON_PAYLOAD_AGENTS and message.strip().startswith('{'):
+            payload = json.loads(message)
+        else:
+            payload = {'prompt': message}
 
         client = boto3.client('bedrock-agentcore', region_name=REGION)
         resp   = client.invoke_agent_runtime(agentRuntimeArn=runtime_arn, payload=json.dumps(payload))
@@ -59,12 +79,13 @@ def lambda_handler(event, context):
             'ttl':      int(time.time()) + 86400,
         }
 
-        if agent_id in ('terraform-hardening', 'threat-modeling'):
+        # Extract download URL for agents that produce files
+        if agent_id in DOWNLOAD_AGENTS:
             download_url, response_text = extract_download_url(response_text)
             item['response'] = response_text
             if download_url:
                 item['download_url']      = download_url
-                item['download_filename'] = 'main-hardened.tf'
+                item['download_filename'] = DOWNLOAD_AGENTS[agent_id]
 
         tbl.put_item(Item=item)
 
