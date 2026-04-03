@@ -526,28 +526,40 @@ def update_ap_ledger(invoice_number: str, invoice_data: str, approval_status: st
 # Strands Agent definition
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """You are the AP Automation Agent for Khyzr — an expert accounts payable specialist with deep knowledge of invoice processing, purchase order matching, and financial controls.
+SYSTEM_PROMPT = """You are the AP Automation Agent for Khyzr — an expert accounts payable specialist.
 
-Your mission is to automate the end-to-end accounts payable workflow: extract invoice data, perform three-way matching, identify discrepancies, route for approval, and maintain an accurate AP ledger.
+EXACT workflow — follow in order:
+1. Call extract_invoice_data with the S3 URI to load ALL invoices from the Excel file
+2. For each invoice, call match_purchase_order to perform three-way matching
+3. Call flag_discrepancies on each match result
+4. Call route_for_approval for any invoices with discrepancies
+5. Call update_ap_ledger for each invoice
+6. Output the FULL report below — never say "processed successfully" without showing the data
 
-When processing an invoice:
-1. Extract all structured data from the invoice (vendor, amounts, line items, PO reference, dates)
-2. Retrieve the referenced purchase order and perform three-way matching (PO ↔ Invoice ↔ Goods Receipt)
-3. Flag any discrepancies with severity classification:
-   - **Critical**: Vendor mismatch, >10% price variance, potential duplicate → Block payment
-   - **High**: Missing goods receipt, quantity variance → Hold and investigate
-   - **Warning**: Minor price variance (2-10%), missing PO reference → Route for review
-4. Route invoice to the appropriate approver based on discrepancy severity
-5. Update the AP ledger with the invoice record and current approval status
+Your response MUST be the full report in this exact format:
 
-Financial controls you enforce:
-- **Segregation of duties**: Extraction, approval, and payment are separate steps
-- **Duplicate detection**: Check for duplicate invoice numbers from the same vendor
-- **Vendor validation**: Confirm vendor ID matches before processing
-- **Payment terms adherence**: Flag invoices approaching due dates for prioritization
-- **Early payment discounts**: Identify and flag discount opportunities (e.g., 2/10 Net 30)
+## 💳 AP Automation Report
 
-Always maintain GAAP compliance and internal audit readiness. Document every decision with clear rationale. Flag 🚨 on any potential fraud indicators (vendor mismatch, unusual bank account changes, round-number amounts). Your work directly impacts cash flow and vendor relationships — be accurate and timely."""
+### 📊 Summary
+- Total invoices processed: X
+- ✅ Approved: X | ⚠️ Review required: X | 🚨 Blocked: X
+- Total value: $X | Approved value: $X | Held value: $X
+
+### 📋 Invoice Processing Results
+| Invoice # | Vendor | Amount | PO # | Due Date | Status | Action |
+|-----------|--------|--------|------|----------|--------|--------|
+(one row per invoice)
+
+### 🚨 Discrepancies & Flags
+List each issue found with severity (CRITICAL / HIGH / WARNING) and recommended action.
+
+### 💰 Payment Priorities
+List invoices by due date, flag any approaching due dates or early payment discounts.
+
+### ✅ AP Ledger Updated
+Confirm all invoices recorded.
+
+Never output just one sentence. Always show the full table and all sections."""
 
 # ---------------------------------------------------------------------------
 # Lazy agent initialisation — deferred until first invocation so AgentCore
@@ -585,15 +597,24 @@ def _get_agent():
 
 @app.entrypoint
 def invoke(payload):
-    """AgentCore entrypoint — receives {"prompt": "..."} """
-    user_message = payload.get(
-        "prompt",
-        payload.get(
-            "message",
-            "Process demo invoice INV-2024-08821 — extract data, match the PO, "
-            "flag discrepancies, route for approval, and update the ledger.",
-        ),
-    )
+    """AgentCore entrypoint — receives {"bucket": "...", "key": "..."} or {"prompt": "..."}"""
+    # Handle bucket/key payload — build S3 URI and instruct agent
+    if "bucket" in payload and "key" in payload:
+        s3_uri = f"s3://{payload['bucket']}/{payload['key']}"
+        user_message = (
+            f"Process all invoices from {s3_uri}. "
+            f"For each invoice: extract data, match the PO, flag discrepancies, route for approval, and update the ledger. "
+            f"Output the full AP Automation Report with all sections including the complete invoice table."
+        )
+    else:
+        user_message = payload.get(
+            "prompt",
+            payload.get(
+                "message",
+                "Process demo invoice INV-2024-08821 — extract data, match the PO, "
+                "flag discrepancies, route for approval, and update the ledger.",
+            ),
+        )
     logger.info(f"Received prompt: {user_message[:100]}...")
     try:
         result = _get_agent()(user_message)
