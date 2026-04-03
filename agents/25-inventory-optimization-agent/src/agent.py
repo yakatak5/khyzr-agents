@@ -61,13 +61,20 @@ def load_inventory_from_s3(bucket: str, key: str) -> str:
         col_map = {}
         for i, h in enumerate(raw_headers):
             hl = h.lower().replace(" ", "_").replace("-", "_")
-            if any(x in hl for x in ["sku", "code", "item_id"]): col_map["sku"] = i
-            elif any(x in hl for x in ["name", "description", "product"]): col_map["name"] = i
-            elif any(x in hl for x in ["qty", "quantity", "on_hand", "stock"]): col_map["quantity_on_hand"] = i
-            elif any(x in hl for x in ["reorder", "rop", "min"]): col_map["reorder_point"] = i
-            elif any(x in hl for x in ["max", "capacity"]): col_map["max_stock"] = i
-            elif any(x in hl for x in ["lead", "days"]): col_map["lead_time_days"] = i
-            elif any(x in hl for x in ["cost", "price", "unit"]): col_map["unit_cost"] = i
+            if any(x in hl for x in ["sku", "code", "item_id"]):
+                col_map["sku"] = i
+            elif any(x in hl for x in ["name", "description", "product"]):
+                col_map["name"] = i
+            elif any(x in hl for x in ["max_stock", "max_qty", "capacity", "maximum"]):
+                col_map["max_stock"] = i
+            elif any(x in hl for x in ["reorder_point", "reorder", "rop", "min_stock", "minimum"]):
+                col_map["reorder_point"] = i
+            elif any(x in hl for x in ["quantity_on_hand", "on_hand", "qty_on_hand", "qty", "quantity", "stock_qty", "current_stock"]):
+                col_map["quantity_on_hand"] = i
+            elif any(x in hl for x in ["lead_time", "lead", "days"]):
+                col_map["lead_time_days"] = i
+            elif any(x in hl for x in ["unit_cost", "cost", "price"]):
+                col_map["unit_cost"] = i
 
         items = []
         for row in rows[1:]:
@@ -236,23 +243,34 @@ def _get_agent() -> Agent:
         _agent = Agent(
             model=model,
             tools=[load_inventory_from_s3, calculate_safety_stock, generate_reorder_alerts, store_inventory_report],
-            system_prompt="""You are the Inventory Optimization Agent — a supply chain specialist who ensures the right stock is always available without tying up excess capital.
+            system_prompt="""You are the Inventory Optimization Agent — a supply chain specialist.
 
-When given an S3 bucket and key for an Excel inventory file:
-1. Load the inventory data using load_inventory_from_s3
-2. Run generate_reorder_alerts to find items needing attention
-3. For HIGH/CRITICAL items, use calculate_safety_stock to give precise recommendations
-4. Synthesize everything into a clear executive summary in markdown
-5. Store the report using store_inventory_report
-6. Lead with the most urgent items — CRITICAL first
+EXACT workflow — follow in order, no shortcuts:
+1. Call load_inventory_from_s3(bucket, key) — get the inventory JSON
+2. Take the EXACT JSON string returned from step 1 and pass it to generate_reorder_alerts(items_json=<that exact string>)
+3. For every item with urgency CRITICAL or HIGH in the alerts, call calculate_safety_stock with realistic demand estimates
+4. Call store_inventory_report with the full report content
+5. Output the FULL report below — never say "stored to S3" or reference internals
 
-Format your response with:
-- 🚨 Executive summary (counts by urgency)
-- Detailed alert table (SKU, name, qty, action)
-- Safety stock recommendations for top items
-- Overall inventory health score
+Output format (REQUIRED — always include all sections even if empty):
 
-If tool errors occur, silently use the data you have and deliver the best analysis possible. Never mention tool failures to the user.
+## 📦 Inventory Optimization Report
+
+### 🚨 Executive Summary
+- Total SKUs: X | Critical: X | High: X | Medium: X | Low: X | Healthy: X
+
+### ⚠️ Reorder Alerts
+| SKU | Name | Qty On Hand | Reorder Point | Urgency | Action |
+|-----|------|-------------|---------------|---------|--------|
+
+### 📊 Safety Stock Recommendations
+| SKU | Name | Safety Stock | Reorder Point | Monthly Holding Cost |
+|-----|------|-------------|---------------|----------------------|
+
+### ✅ Inventory Health Score
+X/100 — one sentence summary
+
+Never skip generate_reorder_alerts. Never say items are healthy without running the tool first.
 """,
         )
     return _agent
