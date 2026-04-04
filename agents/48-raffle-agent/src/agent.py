@@ -78,7 +78,7 @@ def pick_winners(entries_json: str, num_winners: int = 1, name_field: str = "") 
         name_field: Column name to use as the display name (auto-detected if empty)
 
     Returns:
-        JSON string with winner(s) details
+        JSON string with winner(s) details including full name from first+last columns
     """
     try:
         data = json.loads(entries_json)
@@ -92,20 +92,37 @@ def pick_winners(entries_json: str, num_winners: int = 1, name_field: str = "") 
 
         winners = random.sample(entries, num_winners)
 
-        # Auto-detect name field if not provided
-        if not name_field and winners:
-            for candidate in ["name", "Name", "NAME", "full_name", "Full Name", "participant", "Participant"]:
-                if candidate in winners[0]:
-                    name_field = candidate
-                    break
-            if not name_field:
-                name_field = list(winners[0].keys())[0]
+        def get_display_name(w):
+            keys = [k.lower() for k in w.keys()]
+            orig_keys = list(w.keys())
+
+            # Try to find first name + last name columns and combine them
+            first_key = next((orig_keys[i] for i, k in enumerate(keys)
+                              if k in ("first name", "firstname", "first_name", "given name", "given_name")), None)
+            last_key  = next((orig_keys[i] for i, k in enumerate(keys)
+                              if k in ("last name", "lastname", "last_name", "surname", "family name", "family_name")), None)
+
+            if first_key and last_key:
+                return f"{w.get(first_key, '').strip()} {w.get(last_key, '').strip()}".strip()
+
+            # Single full-name column
+            if name_field and name_field in w:
+                return w[name_field]
+            for candidate in ["name", "Name", "NAME", "full_name", "Full Name",
+                               "Full_Name", "participant", "Participant"]:
+                if candidate in w:
+                    return w[candidate]
+
+            # Fallback: first column
+            return str(list(w.values())[0])
+
+        winner_names = [get_display_name(w) for w in winners]
 
         result = {
             "total_entries": len(entries),
             "num_winners": len(winners),
             "winners": winners,
-            "winner_names": [w.get(name_field, str(w)) for w in winners],
+            "winner_names": winner_names,
         }
         logger.info(f"Selected {len(winners)} winner(s) from {len(entries)} entries")
         return json.dumps(result, indent=2)
@@ -132,15 +149,20 @@ def _get_agent() -> Agent:
             system_prompt="""You are the Raffle Agent — a friendly, enthusiastic assistant for running fair random draws.
 
 When given an S3 bucket and key for an Excel file:
-1. Load the entries using load_entries_from_s3
-2. Tell the user how many entries were found
-3. Use pick_winners to randomly select the winner(s)
-4. Announce the winner(s) in an exciting, celebratory way 🎉
-5. Show all their details from the spreadsheet
+1. Call load_entries_from_s3 to load the entries
+2. Tell the user how many entries were loaded
+3. Call pick_winners to randomly select the winner(s) — the tool will automatically detect First Name + Last Name columns and combine them
+4. Announce each winner by their FULL NAME from the winner_names field in the tool result
+5. Also show any other details from their row (email, phone, ticket number, etc.)
 
-If the user specifies how many winners they want, pick that many.
-If no number is specified, pick 1 winner.
+Format your announcement like:
+🎉 **AND THE WINNER IS...**
+# [Full Name]
+[Other details from their row]
 
+If multiple winners, number them: 🥇 1st Place, 🥈 2nd Place, etc.
+
+Always use the winner_names from the pick_winners result — never make up or shorten names.
 Keep it fun and energetic — this is a celebration!
 """,
         )
